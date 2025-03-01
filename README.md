@@ -1,7 +1,4 @@
-This simple code, created with a very simple prompts given to Gemini, uses a Physics-Informed Neural Network to "solve" the linear, scalar advection equation
-
-$$\frac{\partial \bf q}{\partial t} + a{\partial \bf q}{\partial x} = 0$$
-where $$a$$ is a constant speed.
+This simple code, created with a very simple prompts given to Gemini, uses a Physics-Informed Neural Network to "solve" a linear, scalar partial differential equation.
 
 It is a toy code for educational purpuses only although it can be very easily modified and extended to do science with it.
 
@@ -20,12 +17,13 @@ pip3 install numpy
 pip3 install matplotlib
 ```
 
-
-
-## Sample equation
-
 ## Examples
+1D scalar and linear advection equation
+$$\frac{\partial u}{\partial t} + a\frac{\partial u}{\partial x} = 0$$
+where $$a$$ is a constant speed.
 
+The initial condition for the results below is a `u=sin(x)`.
+In the figure, solutions obtained with 1000 (left) and 10000 (right) epochs:
 <img src="assets/PINN-advection-1KVS10Kepochs.png"
      alt="Markdown icon"
      style="float: left; margin-right: 5px;" />
