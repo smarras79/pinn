@@ -12,7 +12,7 @@ t_min, t_max = 0.0, 1.0
 num_collocation_points = 1000
 num_initial_points = 100
 num_boundary_points = 100
-epochs = 10000
+epochs = 1000
 learning_rate = 1e-3
 num_time_steps = 10  # Number of time steps for output
 
