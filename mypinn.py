@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # Parameters
 c = 1.0  # Advection velocity
@@ -13,6 +14,11 @@ num_initial_points = 100
 num_boundary_points = 100
 epochs = 1000
 learning_rate = 1e-3
+num_time_steps = 10  # Number of time steps for output
+
+# Output directory
+output_dir = "solution_images"
+os.makedirs(output_dir, exist_ok=True)
 
 # Neural Network
 class PINN(nn.Module):
@@ -38,9 +44,8 @@ optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Loss function
 def physics_informed_loss(u, x, t):
-    u_xt = torch.autograd.grad(u, [x, t], grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    u_x = torch.autograd.grad(u_xt, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    u_t = torch.autograd.grad(u_xt, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     residual = u_t + c * u_x
     return torch.mean(residual**2)
 
@@ -91,43 +96,20 @@ for epoch in range(epochs):
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
 
-# Inference
-x_test = torch.linspace(x_min, x_max, 100).view(-1, 1)
-t_test = torch.ones_like(x_test) * 0.5 #Example time.
-u_pred = model(x_test, t_test)
+# Outputting solution at time steps
+x_plot = torch.linspace(x_min, x_max, 100).view(-1, 1)
+time_steps = torch.linspace(t_min, t_max, num_time_steps)
 
-print("Predicted u values:", u_pred.detach().numpy())
+for i, t_val in enumerate(time_steps):
+    t_plot = torch.ones_like(x_plot) * t_val
+    u_pred_plot = model(x_plot, t_plot).detach().numpy()
 
-# Inference for initial condition plot
-x_initial_plot = torch.linspace(x_min, x_max, 100).view(-1, 1)
-t_initial_plot = torch.zeros_like(x_initial_plot)
-u_initial_pred_plot = model(x_initial_plot, t_initial_plot).detach().numpy()
-u_true_initial_plot = np.sin(np.pi * x_initial_plot.numpy())
+    plt.figure()
+    plt.plot(x_plot.numpy(), u_pred_plot)
+    plt.xlabel("x")
+    plt.ylabel("u(x, t)")
+    plt.title(f"Solution at t = {t_val.item():.2f}")
+    plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}.png"))
+    plt.close()
 
-# Inference for final solution plot
-x_final_plot = torch.linspace(x_min, x_max, 100).view(-1, 1)
-t_final_plot = torch.ones_like(x_final_plot) * t_max
-u_final_pred_plot = model(x_final_plot, t_final_plot).detach().numpy()
-
-# Plotting
-plt.figure(figsize=(12, 5))
-
-# Initial condition plot
-plt.subplot(1, 2, 1)
-plt.plot(x_initial_plot.numpy(), u_initial_pred_plot, label="PINN Initial")
-plt.plot(x_initial_plot.numpy(), u_true_initial_plot, '--', label="True Initial")
-plt.xlabel("x")
-plt.ylabel("u(x, 0)")
-plt.title("Initial Condition")
-plt.legend()
-
-# Final solution plot
-plt.subplot(1, 2, 2)
-plt.plot(x_final_plot.numpy(), u_final_pred_plot, label="PINN Final")
-plt.xlabel("x")
-plt.ylabel(f"u(x, {t_max})")
-plt.title("Final Solution")
-plt.legend()
-
-plt.tight_layout()
-plt.show()
+print(f"Solution images saved in '{output_dir}'")
