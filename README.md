@@ -29,6 +29,6 @@ In the figure, solutions obtained with 1000 (left) and 10000 (right) epochs:
      style="float: left; margin-right: 5px;" />
 
 Whereas the following figure uses only 1000 epochs (like the left one above, but 5 neuron layers instead of 3:
-<img src="assets/PINN-advection-1k-but-5layers.png"
+<img src="assets/PINN-advection-1Kepochs-5layers.png"
      alt="Markdown icon"
      style="float: left; margin-right: 5px;" />
