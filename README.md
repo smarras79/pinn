@@ -19,7 +19,9 @@ pip3 install matplotlib
 
 ## Examples
 1D scalar and linear advection equation
+```
 $$\frac{\partial u}{\partial t} + a\frac{\partial u}{\partial x} = 0$$
+```
 where $$a$$ is a constant speed.
 
 The initial condition for the results below is a `u=sin(x)`.
