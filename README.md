@@ -24,6 +24,11 @@ where $$a$$ is a constant speed.
 
 The initial condition for the results below is a `u=sin(x)`.
 In the figure, solutions obtained with 1000 (left) and 10000 (right) epochs:
-<img src="assets/PINN-advection-1KVS10Kepochs.png"
+<img src="assets/PINN-advection-1KVS10Kepochs-3layers.png"
+     alt="Markdown icon"
+     style="float: left; margin-right: 5px;" />
+
+Whereas the following figure uses only 1000 epochs (like the left one above, but 5 neuron layers instead of 3:
+<img src="assets/PINN-advection-1KVS10Kepochs-5layers.png"
      alt="Markdown icon"
      style="float: left; margin-right: 5px;" />

@@ -21,7 +21,41 @@ output_dir = "solution_images"
 os.makedirs(output_dir, exist_ok=True)
 
 # Neural Network
+
 class PINN(nn.Module):
+    """
+    Let's break down that part of the code, which defines the neural network architecture within the PINN:
+
+    1. class PINN(nn.Module):
+
+    This line defines a Python class named PINN that inherits from nn.Module.
+    In PyTorch, nn.Module is the base class for all neural network modules. By inheriting from it, PINN becomes a PyTorch neural network.
+
+    2. def __init__(self):
+    This is the constructor of the PINN class. It's called when you create an instance of the PINN network (e.g., model = PINN()).
+    super(PINN, self).__init__() calls the constructor of the parent class nn.Module, which is essential for proper initialization.
+
+    3. self.net = nn.Sequential(...):
+
+    nn.Sequential is a PyTorch container that allows you to create a neural network by stacking layers in a sequential order.
+    he layers defined inside nn.Sequential will be executed in the order they are added.
+
+    4. nn.Linear(2, 20):
+
+    This is a linear layer (also known as a fully connected layer).
+    2 represents the number of input features. In our case, the inputs are x (spatial coordinate) and t (time), so there are two input features.
+    20 represents the number of output features (neurons) in this layer.
+    In essence, this layer performs a linear transformation: output = input * weight + bias, where weight is a 2x20 matrix and bias is a 20-element vector. This layer takes the 2 inputs and transforms them into 20 outputs.
+
+    5. nn.Tanh():
+    This is the hyperbolic tangent activation function.
+    Activation functions introduce non-linearity into the network, allowing it to learn complex relationships. Without non-linear activation functions, the entire network would be equivalent to a single linear layer.
+    Tanh squashes the output of the previous linear layer to the range [-1, 1].
+
+    Same loging goes for the following linear and Tanh.
+    
+    Finally, 1 output feature. This is because we want the network to output a single value, u(x, t), which is the approximated solution to the advection equation.
+"""
     def __init__(self):
         super(PINN, self).__init__()
         self.net = nn.Sequential(
