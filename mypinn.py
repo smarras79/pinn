@@ -58,6 +58,10 @@ def initial_condition_loss(u_initial, x_initial):
 def boundary_condition_loss(u_left, u_right):
     return torch.mean((u_left - u_right)**2)
 
+# Exact solution (for comparison)
+def exact_solution(x, t, c):
+    return np.sin(np.pi * (x - c * t))
+
 # Training data
 x_collocation = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
 t_collocation = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
@@ -103,12 +107,17 @@ time_steps = torch.linspace(t_min, t_max, num_time_steps)
 for i, t_val in enumerate(time_steps):
     t_plot = torch.ones_like(x_plot) * t_val
     u_pred_plot = model(x_plot, t_plot).detach().numpy()
+    x_np = x_plot.numpy().flatten()
+    t_np = t_val.item()
+    u_exact = exact_solution(x_np, t_np, c)
 
     plt.figure()
-    plt.plot(x_plot.numpy(), u_pred_plot)
+    plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution')
+    plt.plot(x_np, u_exact, '--', label='Exact Solution')
     plt.xlabel("x")
     plt.ylabel("u(x, t)")
     plt.title(f"Solution at t = {t_val.item():.2f}")
+    plt.legend()
     plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}.png"))
     plt.close()
 
