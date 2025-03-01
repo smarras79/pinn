@@ -14,6 +14,12 @@ pip3 install matplotlib
 ```
 
 ## Examples
-<img src="assets/solution_t_002.png"
+- 1000 epochs
+<img src="assets/solution_t_002-1000epochs.png"
+     alt="Markdown icon"
+     style="float: left; margin-right: 5px;" />
+
+- 10000 epochs
+<img src="assets/solution_t_002-10000epochs.png"
      alt="Markdown icon"
      style="float: left; margin-right: 5px;" />
