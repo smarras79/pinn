@@ -1,24 +1,29 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 
+
 # Parameters
 c     = 1.0 # Advection velocity
 alpha = 0.0 # Diffusion coefficient (set to 0.0 for no diffusion)
-x_min, x_max = -1.0, 1.0
-t_min, t_max = 0.0, 1.0
+x_min, x_max = 0.0, 2.0
+t_min, t_max = 0.0, 2/math.pi #1.0
 num_collocation_points = 1000
 num_initial_points = 100
 num_boundary_points = 100
-epochs = 1000
+epochs = 20000
 learning_rate = 1e-3
 num_time_steps = 10  # Number of time steps for output
+#eqs = "advection"
+eqs = "burgers"
+lplot_exact = False
 
 # Output directory
-output_dir = "solution_images"
+output_dir = "solution_images" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 # Neural Network
@@ -26,7 +31,7 @@ os.makedirs(output_dir, exist_ok=True)
 class PINN(nn.Module):
     """
     Let's break down that part of the code, which defines the neural network architecture within the PINN:
-
+    
     1. class PINN(nn.Module):
 
     This line defines a Python class named PINN that inherits from nn.Module.
@@ -77,18 +82,28 @@ model = PINN()
 # Optimizer
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
+def myresidual(u, u_t, u_x, u_xx, eqs):
+    if eqs == "advection":
+        return u_t + c*u_x - alpha*u_xx
+    elif eqs == "burgers":
+        return u_t + u*u_x #- alpha*u_xx
+
 # Loss function
 def physics_informed_loss(u, x, t):
     u_x  = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     u_t  = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]    
     u_xx = torch.autograd.grad(u_x, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    residual = u_t + c*u_x - alpha*u_xx
+    residual = myresidual(u, u_t, u_x, u_xx, eqs) #u_t + c*u_x - alpha*u_xx
     return torch.mean(residual**2)
 
 # Initial condition (e.g., u(x, 0) = sin(pi * x))
-def initial_condition_loss(u_initial, x_initial):
-    u_true_initial = torch.sin(torch.pi * x_initial)
-    return torch.mean((u_initial - u_true_initial)**2)
+def initial_condition_loss(u_initial, x_initial, eqs):
+    if eqs == "advection":
+        u_true_initial = torch.sin(torch.pi * x_initial)
+        return torch.mean((u_initial - u_true_initial)**2)
+    elif eqs == "burgers":
+        u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
+        return torch.mean((u_initial - u_true_initial)**2)
 
 # Boundary condition (e.g., periodic boundaries)
 def boundary_condition_loss(u_left, u_right):
@@ -116,23 +131,23 @@ for epoch in range(epochs):
     t_collocation.requires_grad_(True)
     u_collocation = model(x_collocation, t_collocation)
     loss_pde      = physics_informed_loss(u_collocation, x_collocation, t_collocation)
-
+    
     # Initial condition loss
     u_initial_pred = model(x_initial, t_initial)
-    loss_initial   = initial_condition_loss(u_initial_pred, x_initial)
+    loss_initial   = initial_condition_loss(u_initial_pred, x_initial, eqs)
 
     # Boundary condition loss
     u_boundary_left  = model(x_boundary_left, t_boundary)
     u_boundary_right = model(x_boundary_right, t_boundary)
     loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
-
+    
     # Total loss
     loss = loss_pde + loss_initial + loss_boundary
 
     # Backpropagation and optimization
     loss.backward()
     optimizer.step()
-
+    
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
 
@@ -149,12 +164,13 @@ for i, t_val in enumerate(time_steps):
 
     plt.figure()
     plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution')
-    plt.plot(x_np, u_exact, '--', label='Exact Solution')
+    if lplot_exact == True:
+        plt.plot(x_np, u_exact, '--', label='Exact Solution')
     plt.xlabel("x")
     plt.ylabel("u(x, t)")
     plt.title(f"Solution at t = {t_val.item():.2f}")
     plt.legend()
-    plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}.png"))
+    plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}epochs"+str(epochs)+".png"))
     plt.close()
 
 print(f"Solution images saved in '{output_dir}'")

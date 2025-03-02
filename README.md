@@ -1,4 +1,4 @@
-This simple code, created with a very simple prompts given to Gemini, uses a Physics-Informed Neural Network to "solve" a linear, scalar partial differential equation.
+This simple code uses a Physics-Informed Neural Network to "solve" simple linear and non-linear partial differential equations.
 
 It is a toy code for educational purpuses only although it can be very easily modified and extended to do science with it.
 
@@ -23,7 +23,7 @@ python3 mypinn.py
 ```
 
 ## Examples
-1D scalar and linear advection-diffusion equation
+1. 1D scalar and linear advection-diffusion equation
 $$\frac{\partial u}{\partial t} + a\frac{\partial u}{\partial x} - \alpha\frac{\partial^2 u}{\partial x^2} = 0$$
 where $$a$$ is a constant speed and $$\alpha$$ is a constant diffusivity.
 
@@ -37,3 +37,11 @@ Whereas the following figure uses only 1000 epochs (like the left one above, but
 <img src="assets/PINN-advection-1Kepochs-5layers.png"
      alt="Markdown icon"
      style="float: left; margin-right: 5px;" />
+
+2. Non-linear inviscod Burgers equation
+$$\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = 0$$.
+
+<img src="assets/PINN-burgers.png"
+     alt="Markdown icon"
+     style="float: left; margin-right: 5px;" />
+
