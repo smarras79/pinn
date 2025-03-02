@@ -17,10 +17,15 @@ pip3 install numpy
 pip3 install matplotlib
 ```
 
+## Run the code:
+```
+python3 mypinn.py
+```
+
 ## Examples
-1D scalar and linear advection equation
-$$\frac{\partial u}{\partial t} + a\frac{\partial u}{\partial x} = 0$$
-where $$a$$ is a constant speed.
+1D scalar and linear advection-diffusion equation
+$$\frac{\partial u}{\partial t} + a\frac{\partial u}{\partial x} - \alpha\frac{\partial^2 u}{\partial x^2} = 0$$
+where $$a$$ is a constant speed and $$\alpha$$ is a constant diffusivity.
 
 The initial condition for the results below is a `u=sin(x)`.
 In the figure, solutions obtained with 1000 (left) and 10000 (right) epochs:

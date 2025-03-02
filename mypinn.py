@@ -6,7 +6,8 @@ import numpy as np
 import os
 
 # Parameters
-c = 1.0  # Advection velocity
+c     = 1.0 # Advection velocity
+alpha = 0.0 # Diffusion coefficient (set to 0.0 for no diffusion)
 x_min, x_max = -1.0, 1.0
 t_min, t_max = 0.0, 1.0
 num_collocation_points = 1000
@@ -78,9 +79,10 @@ optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Loss function
 def physics_informed_loss(u, x, t):
-    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    residual = u_t + c * u_x
+    u_x  = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    u_t  = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]    
+    u_xx = torch.autograd.grad(u_x, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    residual = u_t + c*u_x - alpha*u_xx
     return torch.mean(residual**2)
 
 # Initial condition (e.g., u(x, 0) = sin(pi * x))
@@ -97,13 +99,13 @@ def exact_solution(x, t, c):
     return np.sin(np.pi * (x - c * t))
 
 # Training data
-x_collocation = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
-t_collocation = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
-x_initial = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
-t_initial = torch.zeros(num_initial_points, 1)
-x_boundary_left = torch.ones(num_boundary_points, 1) * x_min
+x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
+t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
+x_initial        = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
+t_initial        = torch.zeros(num_initial_points, 1)
+x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
 x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
-t_boundary = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
+t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
 # Training loop
 for epoch in range(epochs):
@@ -113,16 +115,16 @@ for epoch in range(epochs):
     x_collocation.requires_grad_(True)
     t_collocation.requires_grad_(True)
     u_collocation = model(x_collocation, t_collocation)
-    loss_pde = physics_informed_loss(u_collocation, x_collocation, t_collocation)
+    loss_pde      = physics_informed_loss(u_collocation, x_collocation, t_collocation)
 
     # Initial condition loss
     u_initial_pred = model(x_initial, t_initial)
-    loss_initial = initial_condition_loss(u_initial_pred, x_initial)
+    loss_initial   = initial_condition_loss(u_initial_pred, x_initial)
 
     # Boundary condition loss
-    u_boundary_left = model(x_boundary_left, t_boundary)
+    u_boundary_left  = model(x_boundary_left, t_boundary)
     u_boundary_right = model(x_boundary_right, t_boundary)
-    loss_boundary = boundary_condition_loss(u_boundary_left, u_boundary_right)
+    loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
 
     # Total loss
     loss = loss_pde + loss_initial + loss_boundary
