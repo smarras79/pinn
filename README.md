@@ -39,7 +39,7 @@ Whereas the following figure uses only 1000 epochs (like the left one above, but
      style="float: left; margin-right: 5px;" />
 
 2. Non-linear inviscod Burgers equation
-$$\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = 0$$.
+$$\frac{\partial u}{\partial t} + u\frac{\partial u}{\partial x} = 0$$ with initial conditions $$u=sin(\pi x) + 0.5 and periodic boundary conditions on \Omega = [0, 2]. The solution in the figure is plotted at t=2/\pi.
 
 <img src="assets/PINN-burgers.png"
      alt="Markdown icon"
