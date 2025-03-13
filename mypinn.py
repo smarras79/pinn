@@ -182,14 +182,25 @@ for i, t_val in enumerate(time_steps):
     u_exact = exact_solution(x_np, y_np, t_np, c_x, c_y)
 
     plt.figure()
-    plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution')
+    plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution x')
     if lplot_exact == True:
         plt.plot(x_np, u_exact, '--', label='Exact Solution')
     plt.xlabel("x")
-    plt.ylabel("u(x, y, t)")
+    plt.ylabel("u(x, t)")
     plt.title(f"Solution at t = {t_val.item():.2f}")
     plt.legend()
-    plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}epochs"+str(epochs)+".png"))
+    plt.savefig(os.path.join(output_dir, f"solution_x_t_{i:03d}epochs"+str(epochs)+".png"))
+    plt.close()
+
+    plt.figure()
+    plt.plot(y_plot.numpy(), u_pred_plot, label='PINN Solution y')
+    if lplot_exact == True:
+        plt.plot(y_np, u_exact, '--', label='Exact Solution')
+    plt.xlabel("y")
+    plt.ylabel("u(y, t)")
+    plt.title(f"Solution at t = {t_val.item():.2f}")
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f"solution_y_t_{i:03d}epochs"+str(epochs)+".png"))
     plt.close()
 
 print(f"Solution images saved in '{output_dir}'")
