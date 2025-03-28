@@ -12,14 +12,18 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 # Parameters
 c_x     = 1.0 # Advection velocity in x-direction
 c_y     = 1.0 # Advection velocity in y-direction
+x0, y0 = 1.0, 1.0 #Center of Gaussian peak
+sigma = 0.5 #Standard deviation, width of Gaussian
 alpha = 0.0 # Diffusion coefficient (set to 0.0 for no diffusion)
 x_min, x_max = 0.0, 2.0
 t_min, t_max = 0.0, 4/math.pi #1.0
 y_min, y_max = 0.0, 2.0 # don't know what these should be hardcoded to yet, so I made them the same as x_min and x_max
 num_collocation_points = 1000
 num_initial_points = 100
-num_boundary_points = 100
-epochs = 20000 
+#num_boundary_points = 100
+##num_boundary_points = (nbdy_x-2)*2 + (nbdy_y-2)*2 + 4
+
+epochs = 2000 
 learning_rate = 1e-3
 num_time_steps = 10  # Number of time steps for output
 eqs = "advection"
@@ -48,23 +52,26 @@ class PINN(nn.Module):
     3. self.net = nn.Sequential(...):
 
     nn.Sequential is a PyTorch container that allows you to create a neural network by stacking layers in a sequential order.
-    he layers defined inside nn.Sequential will be executed in the order they are added.
+    the layers defined inside nn.Sequential will be executed in the order they are added.
 
     4. nn.Linear(2, 20):
 
     This is a linear layer (also known as a fully connected layer).
     2 represents the number of input features. In our case, the inputs are x (spatial coordinate) and t (time), so there are two input features.
     20 represents the number of output features (neurons) in this layer.
-    In essence, this layer performs a linear transformation: output = input * weight + bias, where weight is a 2x20 matrix and bias is a 20-element vector. This layer takes the 2 inputs and transforms them into 20 outputs.
+    In essence, this layer performs a linear transformation: output = input * weight + bias, where weight is a 2x20 matrix 
+    and bias is a 20-element vector. This layer takes the 2 inputs and transforms them into 20 outputs.
 
     5. nn.Tanh():
     This is the hyperbolic tangent activation function.
-    Activation functions introduce non-linearity into the network, allowing it to learn complex relationships. Without non-linear activation functions, the entire network would be equivalent to a single linear layer.
+    Activation functions introduce non-linearity into the network, allowing it to learn complex relationships. Without non-linear 
+    activation functions, the entire network would be equivalent to a single linear layer.
     Tanh squashes the output of the previous linear layer to the range [-1, 1].
 
     Same loging goes for the following linear and Tanh.
     
-    Finally, 1 output feature. This is because we want the network to output a single value, u(x, t), which is the approximated solution to the advection equation.
+    Finally, 1 output feature. This is because we want the network to output a single value, u(x, t), which is the approximated 
+    solution to the advection equation.
 """
     def __init__(self):
         super(PINN, self).__init__()
@@ -77,8 +84,10 @@ class PINN(nn.Module):
         )
 
     def forward(self, x, y, t):
-        inputs = torch.cat([x, y, t], dim=1)
-        return self.net(inputs)
+        inputs = torch.cat([x, y, t], dim=1) # Concatenate x, y, and t
+        z = self.net(inputs)
+        return z
+
 
 # Instantiate the network
 model = PINN()
@@ -105,61 +114,83 @@ def physics_informed_loss(u, x, y, t):
     return torch.mean(residual**2)
 
 # Initial condition (e.g., u(x, 0) = sin(pi * x))
-def initial_condition_loss(u_initial, x_initial, y_initial, eqs):
+# I am using a Gaussian function in lieu of the advection equation for initial conditions
+def initial_condition_loss(u_initial, x_initial, y_initial, eqs, x0, y0, sigma):
     if eqs == "advection":
-        u_true_initial = torch.sin(torch.pi * x_initial) * torch.sin(torch.pi * y_initial)
+        u_true_initial = torch.exp(-((x_initial - x0) **2 + (y_initial - y0)**2) / (2 * sigma**2))
         return torch.mean((u_initial - u_true_initial)**2)
-    elif eqs == "burgers":
-        u_true_initial = torch.sin(torch.pi * x_initial) * torch.sin(torch.pi * y_initial) + 0.5
-        return torch.mean((u_initial - u_true_initial)**2)
+    #if eqs == "advection":
+        #u_true_initial = torch.sin(torch.pi * x_initial) * torch.sin(torch.pi * y_initial)
+        #return torch.mean((u_initial - u_true_initial)**2)
+    #elif eqs == "burgers":
+        #u_true_initial = torch.sin(torch.pi * x_initial) * torch.sin(torch.pi * y_initial) + 0.5
+        #return torch.mean((u_initial - u_true_initial)**2)
 
-# Boundary condition (e.g., periodic boundaries)
-def boundary_condition_loss(u_left, u_right, u_bottom, u_top):
-    return torch.mean((u_left - u_right)**2 + (u_bottom - u_top)**2)
+# Boundary condition (e.g., periodic boundaries) --> removing boundary conditions as of now
+#def boundary_condition_loss(u_left, u_right, u_bottom, u_top):
+    #return torch.mean((u_left - u_right)**2 + (u_bottom - u_top)**2)
+#1. Remove boundary conditions, have a longer domain
+#2. Switch to Gaussian function
+#3. Turn code into 2D
 
 # Exact solution (for comparison)
-def exact_solution(x, y, t, c_x, c_y):
-    return np.sin(np.pi * (x - c_x * t)) * np.sin(np.pi * (y - c_y * t))
+def exact_solution(x, y, t, c_x, c_y, x0, y0, sigma):
+    return np.exp(-((x - c_x * t - x0)**2 + (y - c_y * t - y0)**2) / (2* sigma**2))
+    #return np.sin(np.pi * (x - c_x * t)) * np.sin(np.pi * (y - c_y * t))
 
 # Training data
 x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
-t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
 y_collocation    = torch.rand(num_collocation_points, 1) * (y_max - y_min) + y_min
+t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
+
+x_collocation2D, y_collocation2D = np.meshgrid(x_collocation, y_collocation)
+x_collocation2D = torch.tensor(x_collocation2D.flatten(), dtype=torch.float32).view(-1, 1)
+y_collocation2D = torch.tensor(y_collocation2D.flatten(), dtype=torch.float32).view(-1, 1)
+
+t_collocation = t_collocation.repeat(x_collocation2D.shape[0] // num_collocation_points, 1)
 
 x_initial        = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
 y_initial        = torch.rand(num_initial_points, 1) * (y_max - y_min) + y_min
 t_initial        = torch.zeros(num_initial_points, 1)
 
-x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
-x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
-y_boundary_bottom= torch.ones(num_boundary_points, 1) * y_min
-y_boundary_top   = torch.ones(num_boundary_points, 1) * y_max
-t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
+x_initial2D, y_initial2D = np.meshgrid(x_initial, y_initial)
+x_initial2D = torch.tensor(x_initial2D.flatten(), dtype=torch.float32).view(-1, 1)
+y_initial2D = torch.tensor(y_initial2D.flatten(), dtype=torch.float32).view(-1, 1)
+
+t_initial = t_initial.repeat(x_initial2D.shape[0] // num_initial_points, 1)
+
+
+#x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
+#x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
+#y_boundary_bottom= torch.ones(num_boundary_points, 1) * y_min
+#y_boundary_top   = torch.ones(num_boundary_points, 1) * y_max
+#t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
 # Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
 
     # Collocation loss
-    x_collocation.requires_grad_(True)
+    x_collocation2D.requires_grad_(True)
     t_collocation.requires_grad_(True)
-    y_collocation.requires_grad_(True)
-    u_collocation = model(x_collocation, y_collocation, t_collocation)
-    loss_pde      = physics_informed_loss(u_collocation, x_collocation, y_collocation, t_collocation)
+    y_collocation2D.requires_grad_(True)
+    u_collocation = model(x_collocation2D, y_collocation2D, t_collocation) 
+
+    loss_pde      = physics_informed_loss(u_collocation, x_collocation2D, y_collocation2D, t_collocation)
     
     # Initial condition loss
-    u_initial_pred = model(x_initial, y_initial, t_initial)
-    loss_initial   = initial_condition_loss(u_initial_pred, x_initial, y_initial, eqs)
+    u_initial_pred = model(x_initial2D, y_initial2D, t_initial)
+    loss_initial   = initial_condition_loss(u_initial_pred, x_initial2D, y_initial2D, eqs, x0, y0, sigma)
 
     # Boundary condition loss
-    u_boundary_left  = model(x_boundary_left, y_boundary_bottom, t_boundary)
-    u_boundary_right = model(x_boundary_right, y_boundary_top, t_boundary)
-    u_boundary_bottom= model(x_boundary_left, y_boundary_bottom, t_boundary)
-    u_boundary_top   = model(x_boundary_right, y_boundary_top, t_boundary)
-    loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right, u_boundary_bottom, u_boundary_top)
+    #u_boundary_left  = model(x_boundary_left, y_boundary_bottom, t_boundary)
+    #u_boundary_right = model(x_boundary_right, y_boundary_top, t_boundary)
+    #u_boundary_bottom= model(x_boundary_left, y_boundary_bottom, t_boundary)
+    #u_boundary_top   = model(x_boundary_right, y_boundary_top, t_boundary)
+    #loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right, u_boundary_bottom, u_boundary_top)
     
     # Total loss
-    loss = loss_pde + loss_initial + loss_boundary
+    loss = loss_pde + loss_initial 
 
     # Backpropagation and optimization
     loss.backward()
@@ -179,11 +210,11 @@ for i, t_val in enumerate(time_steps):
     x_np = x_plot.numpy().flatten()
     y_np = y_plot.numpy().flatten()
     t_np = t_val.item()
-    u_exact = exact_solution(x_np, y_np, t_np, c_x, c_y)
+    u_exact = exact_solution(x_np, y_np, t_np, c_x, c_y, x0, y0, sigma)
 
     plt.figure()
     plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution x')
-    if lplot_exact == True:
+    if lplot_exact:
         plt.plot(x_np, u_exact, '--', label='Exact Solution')
     plt.xlabel("x")
     plt.ylabel("u(x, t)")
@@ -194,7 +225,7 @@ for i, t_val in enumerate(time_steps):
 
     plt.figure()
     plt.plot(y_plot.numpy(), u_pred_plot, label='PINN Solution y')
-    if lplot_exact == True:
+    if lplot_exact:
         plt.plot(y_np, u_exact, '--', label='Exact Solution')
     plt.xlabel("y")
     plt.ylabel("u(y, t)")
