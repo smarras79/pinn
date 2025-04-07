@@ -10,17 +10,20 @@ import os
 # Parameters
 c     = 1.0 # Advection velocity
 alpha = 0.0 # Diffusion coefficient (set to 0.0 for no diffusion)
-x_min, x_max = 0.0, 2.0
-t_min, t_max = 0.0, 2/math.pi #1.0
+A = 1.0 # Amplitude of the Gaussian
+mu = 5.0 # Mean (center) of the Gaussian
+sigma = 1.0 # Standard deviation of the Gaussian
+x_min, x_max = 0.0, 10.0
+t_min, t_max = 0.0, 6/math.pi #1.0
 num_collocation_points = 1000
 num_initial_points = 100
 num_boundary_points = 100
 epochs = 20000
 learning_rate = 1e-3
 num_time_steps = 10  # Number of time steps for output
-#eqs = "advection"
-eqs = "burgers"
-lplot_exact = False
+eqs = "advection"
+#eqs = "burgers"
+lplot_exact = True
 
 # Output directory
 output_dir = "solution_images" + str(epochs)
@@ -97,30 +100,34 @@ def physics_informed_loss(u, x, t):
     return torch.mean(residual**2)
 
 # Initial condition (e.g., u(x, 0) = sin(pi * x))
-def initial_condition_loss(u_initial, x_initial, eqs):
+def initial_condition_loss(u_initial, x_initial, eqs, A, mu, sigma):
     if eqs == "advection":
-        u_true_initial = torch.sin(torch.pi * x_initial)
+        u_true_initial = A * torch.exp(-(x_initial - mu)**2 / (2 * sigma**2))
+        #torch.sin(torch.pi * x_initial)
         return torch.mean((u_initial - u_true_initial)**2)
     elif eqs == "burgers":
         u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
         return torch.mean((u_initial - u_true_initial)**2)
 
 # Boundary condition (e.g., periodic boundaries)
-def boundary_condition_loss(u_left, u_right):
-    return torch.mean((u_left - u_right)**2)
+#def boundary_condition_loss(u_left, u_right):
+    #return torch.mean((u_left - u_right)**2)
 
 # Exact solution (for comparison)
-def exact_solution(x, t, c):
-    return np.sin(np.pi * (x - c * t))
+def exact_solution(x, t, c, A, mu, sigma):
+    x = torch.tensor(x, dtype=torch.float32)
+    t = torch.tensor(t, dtype=torch.float32)
+    return A * torch.exp(-((x - c * t - mu) **2) / (2*sigma**2))
+    #return np.sin(np.pi * (x - c * t))
 
 # Training data
 x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
 t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
 x_initial        = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
 t_initial        = torch.zeros(num_initial_points, 1)
-x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
-x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
-t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
+#x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
+#x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
+#t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
 # Training loop
 for epoch in range(epochs):
@@ -134,23 +141,21 @@ for epoch in range(epochs):
     
     # Initial condition loss
     u_initial_pred = model(x_initial, t_initial)
-    loss_initial   = initial_condition_loss(u_initial_pred, x_initial, eqs)
+    loss_initial   = initial_condition_loss(u_initial_pred, x_initial, eqs, A, mu, sigma)
 
     # Boundary condition loss
-    u_boundary_left  = model(x_boundary_left, t_boundary)
-    u_boundary_right = model(x_boundary_right, t_boundary)
-    loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
+    #u_boundary_left  = model(x_boundary_left, t_boundary)
+    #u_boundary_right = model(x_boundary_right, t_boundary)
+    #loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
     
     # Total loss
-    loss = loss_pde + loss_initial + loss_boundary
+    loss = loss_pde + loss_initial #+ loss_boundary
 
     # Backpropagation and optimization
     loss.backward()
     optimizer.step()
-    
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
-
 # Outputting solution at time steps
 x_plot = torch.linspace(x_min, x_max, 100).view(-1, 1)
 time_steps = torch.linspace(t_min, t_max, num_time_steps)
@@ -160,7 +165,7 @@ for i, t_val in enumerate(time_steps):
     u_pred_plot = model(x_plot, t_plot).detach().numpy()
     x_np = x_plot.numpy().flatten()
     t_np = t_val.item()
-    u_exact = exact_solution(x_np, t_np, c)
+    u_exact = exact_solution(x_np, t_np, c, A, mu, sigma)
 
     plt.figure()
     plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution')
