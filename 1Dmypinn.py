@@ -5,21 +5,28 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import time
 
+#Epochs: try with 1000, 10000, 20000
+#Num_collocation_points; try with 100, 500, 1000
+#Learning_rates: try with 1e-1, 1e-2, 1e-4
 
 # Parameters
 c     = 1.0 # Advection velocity
 alpha = 0.0 # Diffusion coefficient (set to 0.0 for no diffusion)
 A = 1.0 # Amplitude of the Gaussian
-mu = 5.0 # Mean (center) of the Gaussian
-sigma = 1.0 # Standard deviation of the Gaussian
-x_min, x_max = 0.0, 10.0
+x0 = 0 # Mean (center) of the Gaussian
+sigma = 2.0 # Standard deviation of the Gaussian
+L = 10.0 #period of the domain (x_max - x_min)
+num_terms = 10 #number of shift terms (sum from -n to n)
+x_min, x_max = -5.0, 5.0
 t_min, t_max = 0.0, 6/math.pi #1.0
-num_collocation_points = 1000
+
 num_initial_points = 100
 num_boundary_points = 100
-epochs = 20000
-learning_rate = 1e-3
+epochs = 10000 
+num_collocation_points = 100
+learning_rate = 1e-1
 num_time_steps = 10  # Number of time steps for output
 eqs = "advection"
 #eqs = "burgers"
@@ -87,7 +94,7 @@ optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 def myresidual(u, u_t, u_x, u_xx, eqs):
     if eqs == "advection":
-        return u_t + c*u_x - alpha*u_xx
+        return u_t + c*u_x #- alpha*u_xx
     elif eqs == "burgers":
         return u_t + u*u_x #- alpha*u_xx
 
@@ -100,9 +107,9 @@ def physics_informed_loss(u, x, t):
     return torch.mean(residual**2)
 
 # Initial condition (e.g., u(x, 0) = sin(pi * x))
-def initial_condition_loss(u_initial, x_initial, eqs, A, mu, sigma):
+def initial_condition_loss(u_initial, x_initial, eqs, A, x0, sigma):
     if eqs == "advection":
-        u_true_initial = A * torch.exp(-(x_initial - mu)**2 / (2 * sigma**2))
+        u_true_initial = periodic_gaussian(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
         #torch.sin(torch.pi * x_initial)
         return torch.mean((u_initial - u_true_initial)**2)
     elif eqs == "burgers":
@@ -110,14 +117,26 @@ def initial_condition_loss(u_initial, x_initial, eqs, A, mu, sigma):
         return torch.mean((u_initial - u_true_initial)**2)
 
 # Boundary condition (e.g., periodic boundaries)
-#def boundary_condition_loss(u_left, u_right):
-    #return torch.mean((u_left - u_right)**2)
+def boundary_condition_loss(u_left, u_right):
+    return torch.mean((u_left - u_right)**2)
+
+def periodic_gaussian(x, t, c, A, x0, sigma, L, num_terms) :
+    result = 0.0
+    for n in range(-num_terms, num_terms + 1) :
+        shift = x - c * t - x0 + n * L
+        result += torch.exp(-shift**2 / (2 * sigma**2))
+    return A * result
 
 # Exact solution (for comparison)
-def exact_solution(x, t, c, A, mu, sigma):
+# Figure out why the exact solution does not follow a periodic domain
+def exact_solution(x, t, c, A, x0, sigma, L, num_terms):
     x = torch.tensor(x, dtype=torch.float32)
     t = torch.tensor(t, dtype=torch.float32)
-    return A * torch.exp(-((x - c * t - mu) **2) / (2*sigma**2))
+    u = torch.zeros_like(x)
+    for n in range(-num_terms, num_terms + 1):
+        shift = x - c * t + n * L - x0
+        u += torch.exp(-(shift**2) / (2 * sigma**2))
+    return A * u
     #return np.sin(np.pi * (x - c * t))
 
 # Training data
@@ -125,10 +144,11 @@ x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_m
 t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
 x_initial        = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
 t_initial        = torch.zeros(num_initial_points, 1)
-#x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
-#x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
-#t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
+x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
+x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
+t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
+start_time = time.time()
 # Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
@@ -141,31 +161,35 @@ for epoch in range(epochs):
     
     # Initial condition loss
     u_initial_pred = model(x_initial, t_initial)
-    loss_initial   = initial_condition_loss(u_initial_pred, x_initial, eqs, A, mu, sigma)
+    loss_initial   = initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma)
 
     # Boundary condition loss
-    #u_boundary_left  = model(x_boundary_left, t_boundary)
-    #u_boundary_right = model(x_boundary_right, t_boundary)
-    #loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
+    u_boundary_left  = model(x_boundary_left, t_boundary)
+    u_boundary_right = model(x_boundary_right, t_boundary)
+    loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
     
     # Total loss
-    loss = loss_pde + loss_initial #+ loss_boundary
+    loss = loss_pde + loss_initial + loss_boundary
 
     # Backpropagation and optimization
     loss.backward()
     optimizer.step()
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
+
+elapsed_time = time.time() - start_time
+print(f"Training completed in {elapsed_time:.2f} seconds.")
 # Outputting solution at time steps
 x_plot = torch.linspace(x_min, x_max, 100).view(-1, 1)
 time_steps = torch.linspace(t_min, t_max, num_time_steps)
 
+#Remember to put what parameters have changed for the graphs
 for i, t_val in enumerate(time_steps):
     t_plot = torch.ones_like(x_plot) * t_val
     u_pred_plot = model(x_plot, t_plot).detach().numpy()
     x_np = x_plot.numpy().flatten()
     t_np = t_val.item()
-    u_exact = exact_solution(x_np, t_np, c, A, mu, sigma)
+    u_exact = exact_solution(x_np, t_np, c, A, x0, sigma, L, num_terms)
 
     plt.figure()
     plt.plot(x_plot.numpy(), u_pred_plot, label='PINN Solution')
@@ -173,7 +197,8 @@ for i, t_val in enumerate(time_steps):
         plt.plot(x_np, u_exact, '--', label='Exact Solution')
     plt.xlabel("x")
     plt.ylabel("u(x, t)")
-    plt.title(f"Solution at t = {t_val.item():.2f}")
+    #plt.title(f"Solution at t = {t_val.item():.2f}")
+    plt.title(f"t {t_val.item():.2f} | Epochs = {epochs} | Points = {num_collocation_points} | LR = {learning_rate} | Time = {elapsed_time:.1f}s")
     plt.legend()
     plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}epochs"+str(epochs)+".png"))
     plt.close()
