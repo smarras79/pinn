@@ -24,9 +24,11 @@ t_min, t_max = 0.0, 6/math.pi #1.0
 
 num_initial_points = 100
 num_boundary_points = 100
-epochs = 10000 
-num_collocation_points = 100
-learning_rate = 1e-1
+
+epochs = 20000 
+num_collocation_points = 1000
+learning_rate = 1e-4
+
 num_time_steps = 10  # Number of time steps for output
 eqs = "advection"
 #eqs = "burgers"
@@ -124,7 +126,7 @@ def periodic_gaussian(x, t, c, A, x0, sigma, L, num_terms) :
     result = 0.0
     for n in range(-num_terms, num_terms + 1) :
         shift = x - c * t - x0 + n * L
-        result += torch.exp(-shift**2 / (2 * sigma**2))
+        result += torch.exp(-(shift**2) / (2 * sigma**2))
     return A * result
 
 # Exact solution (for comparison)
@@ -153,6 +155,17 @@ start_time = time.time()
 for epoch in range(epochs):
     optimizer.zero_grad()
 
+    
+    #Create new set of training data for every epoch training run
+    x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
+    t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
+    x_initial        = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
+    t_initial        = torch.zeros(num_initial_points, 1)
+    x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
+    x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
+    t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
+    
+
     # Collocation loss
     x_collocation.requires_grad_(True)
     t_collocation.requires_grad_(True)
@@ -173,8 +186,13 @@ for epoch in range(epochs):
 
     # Backpropagation and optimization
     loss.backward()
+
+    #https://discuss.pytorch.org/t/issue-with-loss-exploding-after-a-random-number-of-epochs/13568/4
+    #https://www.geeksforgeeks.org/gradient-clipping-in-pytorch-methods-implementation-and-best-practices/
+    torch.nn.utils.clip_grad_norm(model.parameters(),max_norm=1.0)
+
     optimizer.step()
-    if (epoch + 1) % 100 == 0:
+    if (epoch + 1) % 10 == 0:
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
 
 elapsed_time = time.time() - start_time
@@ -198,7 +216,7 @@ for i, t_val in enumerate(time_steps):
     plt.xlabel("x")
     plt.ylabel("u(x, t)")
     #plt.title(f"Solution at t = {t_val.item():.2f}")
-    plt.title(f"t {t_val.item():.2f} | Epochs = {epochs} | Points = {num_collocation_points} | LR = {learning_rate} | Time = {elapsed_time:.1f}s")
+    plt.title(f"t {t_val.item():.2f} | Epochs = {epochs} | Points = {num_collocation_points} | LR = {learning_rate} | Time = {elapsed_time:.1f}s | Loss: {loss.item():.4e}",fontsize=10)
     plt.legend()
     plt.savefig(os.path.join(output_dir, f"solution_t_{i:03d}epochs"+str(epochs)+".png"))
     plt.close()
