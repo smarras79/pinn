@@ -12,29 +12,29 @@ import time
 #Learning_rates: try with 1e-1, 1e-2, 1e-4
 
 # Parameters
-c     = 1.0 # Advection velocity
-alpha = 0.01 # Diffusion coefficient (set to 0.0 for no diffusion)
-# If alpha is set to anything other than 0, then burgers is viscous not inviscid
-A = 1.0 # Amplitude of the Gaussian
-x0 = 0 # Mean (center) of the Gaussian
-sigma = 2.0 # Standard deviation of the Gaussian
-num_terms = 10 #number of shift terms (sum from -n to n)
+c     = 1.0     # Advection velocity
+alpha = 0.01    # Diffusion coefficient (set to 0.0 for no diffusion)
+                # If alpha is set to anything other than 0, then burgers is viscous not inviscid
+A = 1.0         # Amplitude of the Gaussian
+x0 = 0          # Mean (center) of the Gaussian
+sigma = 2.0     # Standard deviation of the Gaussian
+num_terms = 10  # Number of shift terms (summation from -n to n eg if n=10 then summation from -10 to 10)
 x_min, x_max = -math.pi, math.pi
-#x_min, x_max = -10.0, 10.0
-t_min, t_max = 0.0, 6/math.pi #1.0
+t_min, t_max = 0.1, 6/math.pi
 L = x_max - x_min #period of the domain (x_max - x_min)
 
-num_initial_points = 100
+num_initial_points  = 100
 num_boundary_points = 100
 
-epochs = 8000 
+epochs = 2200 
 num_collocation_points = 100
 learning_rate = 1e-3
 
-num_time_steps = 10  # Number of time steps for output
-eqs = "burgers"
-#eqs = "advection"
-lplot_exact = True
+num_time_steps = 10                                     # Number of time steps for output
+eqs = "burgers"                                         #Possible values: burgers OR advection
+initial_condition_loss_type = "sinusodial"              #Possible values: sinusodial OR gaussian
+exact_solution_type = "travelling_wave_solution"        #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution
+lplot_exact = True                                      #Possible values: True OR False
 
 # Output directory
 output_dir = "solution_images" + str(epochs)
@@ -107,20 +107,24 @@ def physics_informed_loss(u, x, t):
     u_x  = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     u_t  = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]    
     u_xx = torch.autograd.grad(u_x, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    residual = myresidual(u, u_t, u_x, u_xx, eqs) #u_t + c*u_x - alpha*u_xx
+    residual = myresidual(u, u_t, u_x, u_xx, eqs)
     return torch.mean(residual**2)
 
-# Initial condition (e.g., u(x, 0) = sin(pi * x))
-def initial_condition_loss(u_initial, x_initial, eqs, A, x0, sigma):
+"""
+Initial condition (e.g., u(x, 0) = sin(pi * x))
+"""
+def initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma):
     if eqs == "advection":
         #u_true_initial = periodic_gaussian(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
         u_true_initial = torch.sin(torch.pi * x_initial)
-        return torch.mean((u_initial - u_true_initial)**2)
+        return torch.mean((u_initial_pred - u_true_initial)**2)
     elif eqs == "burgers":
-        u_true_initial = -torch.sin(x_initial)
-        #u_true_initial = periodic_gaussian_2(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
-        #u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
-        return torch.mean((u_initial - u_true_initial)**2)
+        if initial_condition_loss_type == "sinusodial":
+            u_true_initial = -torch.sin(x_initial)
+            #u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
+        if initial_condition_loss_type == "gaussian":
+            u_true_initial = periodic_gaussian_2(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
+        return torch.mean((u_initial_pred - u_true_initial)**2)
 
 # Boundary condition (e.g., periodic boundaries)
 def boundary_condition_loss(u_left, u_right):
@@ -143,7 +147,6 @@ def periodic_gaussian(x, t, c, A, x0, sigma, L, num_terms) :
     #exp(-200.0*(x - 0.5)^2)
 
 # Exact solution (for comparison)
-# Figure out why the exact solution does not follow a periodic domain
 def exact_solution(x, t, c, A, x0, sigma, L, num_terms):
     x = torch.tensor(x, dtype=torch.float32)
     t = torch.tensor(t, dtype=torch.float32)
@@ -153,6 +156,64 @@ def exact_solution(x, t, c, A, x0, sigma, L, num_terms):
         u += torch.exp(-(shift**2) / (2 * sigma**2))
     return A * u
     #return np.sin(np.pi * (x - c * t))
+
+
+"""
+Steadily propagating traveling wave
+https://en.wikipedia.org/wiki/Burgers%27_equation#Viscous_Burgers'_equation
+"""
+def exact_travelling_wave_solution(x,t,nu):
+    x = torch.tensor(x, dtype=torch.float32)
+    t = torch.tensor(t, dtype=torch.float32)
+    u = torch.zeros_like(x)
+    shift = (x - c*t)/nu 
+    return 2/(1 + torch.exp(shift))
+
+"""
+Same as exact_travelling_wave_solution() but using num_terms
+"""
+def exact_travelling_wave_solution_num_terms(x,t,nu):
+    x = torch.tensor(x, dtype=torch.float32)
+    t = torch.tensor(t, dtype=torch.float32)
+    u = torch.zeros_like(x)
+    for n in range(-num_terms, num_terms + 1):
+        shift = (x - c*t)/nu + n #* L - x0
+        u += 2/(1 + torch.exp(shift))
+    return u
+        
+"""
+From chatgpt
+"""
+def exact_viscous_burgers_solution(x, t, nu, N=2):
+    """
+    Exact solution to viscous Burgers' equation with initial condition u(x, 0) = -sin(x)
+    using the Cole-Hopf transformation on a periodic domain.
+
+    Parameters:
+    - x: tensor of shape [n, 1]
+    - t: scalar float or tensor with same shape as x
+    - nu: viscosity (e.g., 0.01)
+    - N: number of periodic image terms (e.g., 10)
+
+    Returns:
+    - u(x, t): tensor of shape [n, 1]
+    """
+    x = torch.tensor(x, dtype=torch.float32)
+    t = torch.tensor(t, dtype=torch.float32)
+    u = torch.zeros_like(x)
+    x.requires_grad_(True)
+    phi = torch.zeros_like(x)
+
+    for n in range(-N, N + 1):
+        shift = x - 2 * math.pi * n
+        exponent = - (shift**2) / (4 * nu * t)  +  (1 / (2 * nu)) * torch.cos(shift)
+        phi += torch.exp(exponent)
+
+    # Gradient of phi with respect to x
+    phi.requires_grad_(True)
+    #u = -2 * nu * torch.autograd.grad(phi.sum(), phi, create_graph=True)[0] / phi #Given by chatgpt.
+    u = -2 * nu * torch.autograd.grad(phi, x, grad_outputs=torch.ones_like(phi), create_graph=True)[0] / phi #Modified the above
+    return u.detach()
 
 
 # Training data
@@ -166,10 +227,33 @@ t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
 start_time = time.time()
 
+# Training loop for Initial loss
+# for epoch in range(epochs):
+#     optimizer.zero_grad()
+
+#     # Initial condition loss
+#     u_initial_pred = model(x_initial, t_initial)
+#     loss_initial   = initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma)
+
+#     # Total loss
+#     loss = loss_initial #+ loss_pde #+ loss_boundary
+
+#     # Backpropagation and optimization
+#     loss.backward()
+
+#     #https://discuss.pytorch.org/t/issue-with-loss-exploding-after-a-random-number-of-epochs/13568/4
+#     #https://www.geeksforgeeks.org/gradient-clipping-in-pytorch-methods-implementation-and-best-practices/
+#     torch.nn.utils.clip_grad_norm(model.parameters(),max_norm=1.0)
+
+#     optimizer.step()
+#     if (epoch + 1) % 10 == 0:
+#         print(f"Initial Loss Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
+
+
+
 # Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
-
     
     #Create new set of training data for every epoch training run
     # x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
@@ -222,7 +306,13 @@ for i, t_val in enumerate(time_steps):
     u_pred_plot = model(x_plot, t_plot).detach().numpy()
     x_np = x_plot.numpy().flatten()
     t_np = t_val.item()
-    u_exact = exact_solution(x_np, t_np, A)
+
+    if exact_solution_type == "exact_viscous_burgers_solution":
+        u_exact = exact_viscous_burgers_solution(x_np, t_np, alpha)
+    if exact_solution_type == "travelling_wave_solution":
+        u_exact = exact_travelling_wave_solution(x_np, t_np, alpha)
+    
+    #u_exact = exact_solution(x_np, t_np, A)
     #exact_solution(x_np, t_np, c, A, x0, sigma, L, num_terms)
 
     plt.figure()
