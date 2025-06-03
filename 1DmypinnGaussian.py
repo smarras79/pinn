@@ -13,28 +13,28 @@ import time
 
 # Parameters
 c     = 1.0     # Advection velocity
-alpha = 0.01    # Diffusion coefficient (set to 0.0 for no diffusion)
+alpha = 0.0    # Diffusion coefficient (set to 0.0 for no diffusion)
                 # If alpha is set to anything other than 0, then burgers is viscous not inviscid
 A = 1.0         # Amplitude of the Gaussian
 x0 = 0          # Mean (center) of the Gaussian
-sigma = 2.0     # Standard deviation of the Gaussian
+sigma = 0.2     # Standard deviation of the Gaussian
 num_terms = 10  # Number of shift terms (summation from -n to n eg if n=10 then summation from -10 to 10)
-x_min, x_max = -math.pi, math.pi
-t_min, t_max = 0.1, 6/math.pi
+x_min, x_max = 0.0, 2.0
+t_min, t_max = 0.0, 2/math.pi
 L = x_max - x_min #period of the domain (x_max - x_min)
 
 num_initial_points  = 100
 num_boundary_points = 100
 
-epochs = 10000 
+epochs = 1000 
 num_collocation_points = 100
 learning_rate = 1e-3
 
 num_time_steps = 10                                     # Number of time steps for output
 eqs = "burgers"                                         #Possible values: burgers OR advection
-initial_condition_loss_type = "gaussian"                #Possible values: sinusodial OR gaussian
-exact_solution_type = "exact_gaussian_burgers_solution"        #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution OR exact_gaussian_burgers_solution
-lplot_exact = True                                      #Possible values: True OR False
+initial_condition_loss_type = "sinusodial"                #Possible values: sinusodial OR gaussian
+exact_solution_type = "exact_gaussian_burgers_solution" #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution OR exact_gaussian_burgers_solution
+lplot_exact = False                                      #Possible values: True OR False
 lplot_PINN = True                                       #Possible values: True OR False
 
 # Output directory
@@ -121,9 +121,9 @@ def initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma):
         return torch.mean((u_initial_pred - u_true_initial)**2)
     elif eqs == "burgers":
         if initial_condition_loss_type == "sinusodial":
-            u_true_initial = -torch.sin(x_initial)
-            #u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
-        if initial_condition_loss_type == "gaussian":
+            #u_true_initial = -torch.sin(x_initial)
+            u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
+        elif initial_condition_loss_type == "gaussian":
             u_true_initial = periodic_gaussian_initial(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
         return torch.mean((u_initial_pred - u_true_initial)**2)
 
@@ -143,6 +143,7 @@ def periodic_gaussian_initial(x, t, c, A, x0, sigma, L, num_terms) :
 """
 Not sure if we need summation over num_terms for initial condition. TBC
 """
+#Not necessary
 def periodic_gaussian_initial_summation(x, t, c, A, x0, sigma, L, num_terms) :
     result = 0.0
     for n in range(-num_terms, num_terms + 1):
