@@ -22,17 +22,21 @@ num_terms = 10  # Number of shift terms (summation from -n to n eg if n=10 then 
 x_min, x_max = 0.0, 2.0
 t_min, t_max = 0.0, 2/math.pi
 L = x_max - x_min #period of the domain (x_max - x_min)
+lambda_ic = 1.0
+lambda_pde = 1.0
+lambda_bc = 100.0
+lambda_bcux = 10.0
 
-num_initial_points  = 100
-num_boundary_points = 100
+num_initial_points  = 500
+num_boundary_points = 500
 
-epochs = 1000 
-num_collocation_points = 100
+epochs = 10000 
+num_collocation_points = 1000
 learning_rate = 1e-3
 
 num_time_steps = 10                                     # Number of time steps for output
 eqs = "burgers"                                         #Possible values: burgers OR advection
-initial_condition_loss_type = "sinusodial"                #Possible values: sinusodial OR gaussian
+initial_condition_loss_type = "sinusoidal"                #Possible values: sinusoidal OR gaussian
 exact_solution_type = "exact_gaussian_burgers_solution" #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution OR exact_gaussian_burgers_solution
 lplot_exact = False                                      #Possible values: True OR False
 lplot_PINN = True                                       #Possible values: True OR False
@@ -120,7 +124,7 @@ def initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma):
         u_true_initial = torch.sin(torch.pi * x_initial)
         return torch.mean((u_initial_pred - u_true_initial)**2)
     elif eqs == "burgers":
-        if initial_condition_loss_type == "sinusodial":
+        if initial_condition_loss_type == "sinusoidal":
             #u_true_initial = -torch.sin(x_initial)
             u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
         elif initial_condition_loss_type == "gaussian":
@@ -323,21 +327,15 @@ x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
 x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
 t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
+x_boundary_left.requires_grad_(True)
+x_boundary_right.requires_grad_(True)
+
 start_time = time.time()
 
 
 # Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
-    
-    #Create new set of training data for every epoch training run
-    # x_collocation    = torch.rand(num_collocation_points, 1) * (x_max - x_min) + x_min
-    # t_collocation    = torch.rand(num_collocation_points, 1) * (t_max - t_min) + t_min
-    # x_initial        = torch.rand(num_initial_points, 1) * (x_max - x_min) + x_min
-    # t_initial        = torch.zeros(num_initial_points, 1)
-    # x_boundary_left  = torch.ones(num_boundary_points, 1) * x_min
-    # x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
-    # t_boundary       = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
     
     # Initial condition loss
     u_initial_pred = model(x_initial, t_initial)
@@ -352,10 +350,18 @@ for epoch in range(epochs):
     # Boundary condition loss
     u_boundary_left  = model(x_boundary_left, t_boundary)
     u_boundary_right = model(x_boundary_right, t_boundary)
-    loss_boundary    = boundary_condition_loss(u_boundary_left, u_boundary_right)
-    
+    loss_boundary = boundary_condition_loss(u_boundary_left, u_boundary_right)
+
+    u_x_left = torch.autograd.grad(u_boundary_left, x_boundary_left,
+                                grad_outputs=torch.ones_like(u_boundary_left),
+                                create_graph=True)[0]
+    u_x_right = torch.autograd.grad(u_boundary_right, x_boundary_right,
+                                 grad_outputs=torch.ones_like(u_boundary_right),
+                                 create_graph=True)[0]
+    loss_boundary_u_x = boundary_condition_loss(u_x_left, u_x_right)
+
     # Total loss
-    loss = loss_initial + loss_pde + loss_boundary
+    loss = loss_initial * lambda_ic + loss_pde * lambda_pde + loss_boundary * lambda_bc + loss_boundary_u_x * lambda_bcux
 
     # Backpropagation and optimization
     loss.backward()
@@ -365,8 +371,12 @@ for epoch in range(epochs):
     torch.nn.utils.clip_grad_norm(model.parameters(),max_norm=1.0)
 
     optimizer.step()
-    if (epoch + 1) % 10 == 0:
+    if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4e}")
+        print(f"loss_initial {loss_initial:.5f}")
+        print(f"loss_pde {loss_pde:.5f}")
+        print(f"loss_boundary {loss_boundary:.5f}")
+        print(f"loss_boundary_u_x {loss_boundary_u_x:.5f}")
 
 elapsed_time = time.time() - start_time
 print(f"Training completed in {elapsed_time:.2f} seconds.")
