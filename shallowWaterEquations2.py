@@ -84,6 +84,7 @@ class ImprovedPINN_SWE(nn.Module):
         
         # Initialize weights
         self.apply(self._init_weights)
+        
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -119,7 +120,10 @@ class ImprovedPINN_SWE(nn.Module):
         u = ic_weight * u_ic + (1 - ic_weight) * u_raw
         
         return h, u '''
-        return torch.relu(h_raw), u_raw
+        #return torch.relu(h_raw), u_raw
+        epsilon = 1e-3
+        return torch.clamp(h_raw, min=epsilon), u_raw
+
 
 # Instantiate the network
 model = ImprovedPINN_SWE()
@@ -240,10 +244,14 @@ def exact_dam_break_solution(x, t):
 # More focused sampling near dam
 # More focused sampling near dam
 x_dam_dense = torch.linspace(dam_position - 0.5, dam_position + 0.5, num_collocation_points // 2).reshape(-1, 1)
-x_outer = torch.rand(num_collocation_points // 2, 1) * (x_max - x_min) + x_min
+# Instead of uniform over [-π, π], bias toward dam edges
+x_outer_left = torch.rand(num_collocation_points // 4, 1) * (dam_position - x_min) + x_min
+x_outer_right = torch.rand(num_collocation_points // 4, 1) * (x_max - dam_position) + dam_position
+x_outer = torch.cat([x_outer_left, x_outer_right], dim=0)
+#x_outer = torch.rand(num_collocation_points // 2, 1) * (x_max - x_min) + x_min
 x_collocation = torch.cat([x_dam_dense, x_outer], dim=0)
 
-t_early = torch.rand(num_collocation_points // 2, 1) * 0.1
+t_early = torch.rand(num_collocation_points // 4, 1) * 0.1
 t_late = torch.rand(num_collocation_points // 2, 1) * 0.9 + 0.1
 t_collocation = torch.cat([t_early, t_late], dim=0)
 
