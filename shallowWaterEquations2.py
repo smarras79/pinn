@@ -17,7 +17,7 @@ t_min, t_max = 0.0, 1.0         # Time domain [s]
 L = x_max - x_min
 
 # Loss function weights - Better balanced
-lambda_ic = 10.0   # Reduced from 1000
+lambda_ic = 100.0   # Reduced from 1000
 lambda_pde = 1.0
 lambda_bc = 10.0
 
@@ -35,6 +35,8 @@ h_left = 0.25
 h_right = 0.0
 u_left = 0.0
 u_right = 0.0
+
+num_frequencies=6
 
 # Output directory
 output_dir = "swe_solution_fixed_" + str(epochs)
@@ -54,10 +56,12 @@ class ImprovedPINN_SWE(nn.Module):
     """
     def __init__(self):
         super(ImprovedPINN_SWE, self).__init__()
+        num_frequencies = 6
+        input_dim = 2 + 4 * num_frequencies
         
         # Shared backbone for feature extraction
         self.backbone = nn.Sequential(
-            nn.Linear(2, 128),
+            nn.Linear(2 + 4 * num_frequencies, 128),  # updated input size
             nn.Tanh(),
             nn.Linear(128, 128),
             nn.Tanh(),
@@ -88,23 +92,24 @@ class ImprovedPINN_SWE(nn.Module):
 
     def forward(self, x, t):
         # Normalize inputs
-        x_norm = 2 * (x - x_min) / (x_max - x_min) - 1
+        '''x_norm = 2 * (x - x_min) / (x_max - x_min) - 1
         t_norm = 2 * t / t_max - 1
         
-        inputs = torch.cat([x_norm, t_norm], dim=1)
+        inputs = torch.cat([x_norm, t_norm], dim=1)'''
+        inputs = fourier_features(x, t)
         features = self.backbone(inputs)
         
         # Raw outputs
         h_raw = self.h_head(features)
         u_raw = self.u_head(features)
-        
+
         # Apply soft constraints for initial conditions
         # Use a smooth transition function instead of hard constraints
-        sigma = 10.0  # Controls sharpness of transition
-        ic_weight = torch.exp(-t / 0.01)
+        #sigma = 10.0  # Controls sharpness of transition
+        #ic_weight = torch.exp(-t / 0.01)
         
         # Initial conditions
-        h_ic = torch.where(x < dam_position, 
+        '''h_ic = torch.where(x < dam_position, 
                           torch.tensor(h_left, dtype=x.dtype, device=x.device), 
                           torch.tensor(0.0, dtype=x.dtype, device=x.device))
         u_ic = torch.zeros_like(u_raw)
@@ -113,7 +118,8 @@ class ImprovedPINN_SWE(nn.Module):
         h = ic_weight * h_ic + (1 - ic_weight) * torch.relu(h_raw)
         u = ic_weight * u_ic + (1 - ic_weight) * u_raw
         
-        return h, u
+        return h, u '''
+        return torch.relu(h_raw), u_raw
 
 # Instantiate the network
 model = ImprovedPINN_SWE()
@@ -145,7 +151,9 @@ def improved_physics_loss(h, u, x, t):
     momentum_residual = u_t + u * u_x + g * h_x
     
     # Apply momentum equation only in wet regions
-    momentum_loss = torch.mean(wet_mask * momentum_residual**2)
+    #momentum_loss = torch.mean(wet_mask * momentum_residual**2)
+    momentum_loss = torch.mean(wet_mask * torch.abs(momentum_residual))
+
     
     # In dry regions, enforce u ≈ 0 and h ≈ 0
     dry_mask = 1 - wet_mask
@@ -153,7 +161,8 @@ def improved_physics_loss(h, u, x, t):
     dry_u_loss = torch.mean(dry_mask * u**2)
     
     # Continuity equation loss
-    continuity_loss = torch.mean(continuity_residual**2)
+    #continuity_loss = torch.mean(continuity_residual**2)
+    continuity_loss = torch.mean(torch.abs(continuity_residual))
     
     total_pde_loss = continuity_loss + momentum_loss + 0.1 * (dry_h_loss + dry_u_loss)
     
