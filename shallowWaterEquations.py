@@ -17,15 +17,15 @@ t_min, t_max = 0.0, 1.0     # Time domain [s]
 L = x_max - x_min
 
 # Loss function weights - Dramatically increased IC weight
-lambda_ic = 10000.0  # Much higher weight for initial conditions
-lambda_pde = 1.0
-lambda_bc = 100.0   # Increased weight for boundary conditions
+lambda_ic = 1.0  # Much higher weight for initial conditions
+lambda_pde = 100.0
+lambda_bc = 1.0   # Increased weight for boundary conditions
 
 # Training parameters
-num_initial_points = 2000  # More initial condition points
+num_initial_points = 1000  # More initial condition points
 num_boundary_points = 400
 epochs = 2000  # More epochs for better convergence
-num_collocation_points = 15000  # More collocation points
+num_collocation_points = 1500  # More collocation points
 learning_rate = 1e-3
 num_time_steps = 20
 
@@ -105,8 +105,8 @@ class PINN_SWE(nn.Module):
         u_ic = torch.zeros_like(u_raw)
         
         # Blend initial conditions with network output
-        h = ic_weight * h_ic + (1 - ic_weight) * h
-        u = ic_weight * u_ic + (1 - ic_weight) * u_raw
+        h = ic_weight * h_ic  + (1 - ic_weight) * h 
+        u = ic_weight * u_ic  + (1 - ic_weight) * u_raw 
         
         return h, u
 
@@ -292,7 +292,8 @@ for epoch in range(epochs):
 
     # Total loss with adaptive weighting
     adaptive_ic_weight = lambda_ic if epoch < epochs // 2 else lambda_ic * 0.5
-    loss = loss_initial * adaptive_ic_weight + loss_pde * lambda_pde + loss_boundary * lambda_bc
+    #loss = loss_initial * adaptive_ic_weight + loss_pde * lambda_pde + loss_boundary * lambda_bc
+    loss = loss_initial * lambda_ic + loss_pde * lambda_pde + loss_boundary * lambda_bc
     
     # Backpropagation
     loss.backward()

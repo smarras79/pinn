@@ -16,23 +16,23 @@ c     = 1.0     # Advection velocity
 alpha = 0.0    # Diffusion coefficient (set to 0.0 for no diffusion)
                 # If alpha is set to anything other than 0, then burgers is viscous not inviscid
 A = 1.0         # Amplitude of the Gaussian
-x0 = 0          # Mean (center) of the Gaussian
+x0 = 0.0          # Mean (center) of the Gaussian
 sigma = 0.2     # Standard deviation of the Gaussian
 num_terms = 10  # Number of shift terms (summation from -n to n eg if n=10 then summation from -10 to 10)
-x_min, x_max = 0.0, 2.0
+x_min, x_max = -np.pi, np.pi
 t_min, t_max = 0.0, 2/math.pi
 L = x_max - x_min #period of the domain (x_max - x_min)
 lambda_ic = 1.0
 lambda_pde = 1.0
 lambda_bc = 100.0
-lambda_bcux = 10.0
+
 
 num_initial_points  = 500
 num_boundary_points = 500
 
-epochs = 10000 
+epochs = 20000 
 num_collocation_points = 1000
-learning_rate = 1e-3
+learning_rate = 1e-4
 
 num_time_steps = 10                                     # Number of time steps for output
 eqs = "burgers"                                         #Possible values: burgers OR advection
@@ -124,16 +124,25 @@ def initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma):
         u_true_initial = torch.sin(torch.pi * x_initial)
         return torch.mean((u_initial_pred - u_true_initial)**2)
     elif eqs == "burgers":
+        
         if initial_condition_loss_type == "sinusoidal":
-            #u_true_initial = -torch.sin(x_initial)
+            #completely ignore: u_true_initial = -torch.sin(x_initial)
             u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
         elif initial_condition_loss_type == "gaussian":
             u_true_initial = periodic_gaussian_initial(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
+    elif eqs == "sw":
+        H = 1.0
+        x0 = 1.0
+        u_true_initial = torch.where(x_initial < x0, torch.tensor(H), torch.tensor(0.0))
+        
         return torch.mean((u_initial_pred - u_true_initial)**2)
 
 # Boundary condition (e.g., periodic boundaries)
 def boundary_condition_loss(u_left, u_right):
-    return torch.mean((u_left - u_right)**2)
+    u_left_true = torch.tensor(1.0)
+    u_right_true = torch.tensor(0.0)
+    return torch.mean((u_left - u_left_true)**2 + torch.mean((u_right - u_right_true)**2))
+    #return torch.mean((u_left - u_right)**2)
 
 """
 Gaussian Initial condition with no summation
@@ -352,17 +361,17 @@ for epoch in range(epochs):
     u_boundary_right = model(x_boundary_right, t_boundary)
     loss_boundary = boundary_condition_loss(u_boundary_left, u_boundary_right)
 
-    u_x_left = torch.autograd.grad(u_boundary_left, x_boundary_left,
-                                grad_outputs=torch.ones_like(u_boundary_left),
-                                create_graph=True)[0]
-    u_x_right = torch.autograd.grad(u_boundary_right, x_boundary_right,
-                                 grad_outputs=torch.ones_like(u_boundary_right),
-                                 create_graph=True)[0]
-    loss_boundary_u_x = boundary_condition_loss(u_x_left, u_x_right)
+    #u_x_left = torch.autograd.grad(u_boundary_left, x_boundary_left,
+                                #grad_outputs=torch.ones_like(u_boundary_left),
+                                #create_graph=True)[0]
+    #u_x_right = torch.autograd.grad(u_boundary_right, x_boundary_right,
+                                 #grad_outputs=torch.ones_like(u_boundary_right),
+                                 #create_graph=True)[0]
+    #loss_boundary_u_x = boundary_condition_loss(u_x_left, u_x_right)
 
     # Total loss
-    loss = loss_initial * lambda_ic + loss_pde * lambda_pde + loss_boundary * lambda_bc + loss_boundary_u_x * lambda_bcux
-
+    loss = loss_initial * lambda_ic + loss_pde * lambda_pde + loss_boundary * lambda_bc
+    #loss = loss_initial + loss_pde + loss_boundary
     # Backpropagation and optimization
     loss.backward()
 
@@ -376,7 +385,7 @@ for epoch in range(epochs):
         print(f"loss_initial {loss_initial:.5f}")
         print(f"loss_pde {loss_pde:.5f}")
         print(f"loss_boundary {loss_boundary:.5f}")
-        print(f"loss_boundary_u_x {loss_boundary_u_x:.5f}")
+        #print(f"loss_boundary_u_x {loss_boundary_u_x:.5f}")
 
 elapsed_time = time.time() - start_time
 print(f"Training completed in {elapsed_time:.2f} seconds.")
