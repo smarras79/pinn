@@ -24,7 +24,7 @@ lambda_bc = 1.0   # Increased weight for boundary conditions
 # Training parameters
 num_initial_points = 1000  # More initial condition points
 num_boundary_points = 400
-epochs = 2000  # More epochs for better convergence
+epochs = 2010  # More epochs for better convergence
 num_collocation_points = 1500  # More collocation points
 learning_rate = 1e-3
 num_time_steps = 20

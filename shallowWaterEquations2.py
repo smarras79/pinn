@@ -18,10 +18,10 @@ L = x_max - x_min
 
 # Loss function weights - Better balanced
 lambda_ic = 500.0   # Reduced from 1000
-lambda_pde = 1.0
+lambda_pde = 10.0 # 10 gave better results
 lambda_bc = 10.0
 
-momentum_weight = 1.0
+momentum_weight = 0.5
 
 # Training parameters
 num_initial_points = 1000
