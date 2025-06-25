@@ -8,7 +8,7 @@ import os
 import time
 
 # Parameters for Shallow Water Equations
-g = 1.0        # Gravitational acceleration (m/s^2)
+g = 9.81        # Gravitational acceleration (m/s^2)
 H0 = 0.25      # Mean water depth (m)
 
 # Domain parameters
@@ -17,14 +17,16 @@ t_min, t_max = 0.0, 1.0         # Time domain [s]
 L = x_max - x_min
 
 # Loss function weights - Better balanced
-lambda_ic = 100.0   # Reduced from 1000
+lambda_ic = 500.0   # Reduced from 1000
 lambda_pde = 1.0
 lambda_bc = 10.0
+
+momentum_weight = 1.0
 
 # Training parameters
 num_initial_points = 1000
 num_boundary_points = 200
-epochs = 1000
+epochs = 1200
 num_collocation_points = 3000
 learning_rate = 1e-3
 num_time_steps = 20
@@ -71,12 +73,28 @@ class ImprovedPINN_SWE(nn.Module):
         
         # Separate heads for h and u
         self.h_head = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
             nn.Linear(128, 64),
             nn.Tanh(),
             nn.Linear(64, 1)
         )
         
         self.u_head = nn.Sequential(
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
             nn.Linear(128, 64),
             nn.Tanh(),
             nn.Linear(64, 1)
@@ -120,9 +138,9 @@ class ImprovedPINN_SWE(nn.Module):
         u = ic_weight * u_ic + (1 - ic_weight) * u_raw
         
         return h, u '''
-        #return torch.relu(h_raw), u_raw
-        epsilon = 1e-3
-        return torch.clamp(h_raw, min=epsilon), u_raw
+        return torch.relu(h_raw), u_raw
+        #epsilon = 1e-3
+        #return torch.clamp(h_raw, min=epsilon), u_raw
 
 
 # Instantiate the network
@@ -155,8 +173,10 @@ def improved_physics_loss(h, u, x, t):
     momentum_residual = u_t + u * u_x + g * h_x
     
     # Apply momentum equation only in wet regions
-    #momentum_loss = torch.mean(wet_mask * momentum_residual**2)
     momentum_loss = torch.mean(wet_mask * torch.abs(momentum_residual))
+    #momentum_loss = torch.mean(wet_mask * momentum_residual**2) #Disregard. Makes results worse with g=9.81
+    #pde_weight = 1 + 5 * t_collocation / t_max
+    #momentum_loss = torch.mean(pde_weight * wet_mask * torch.abs(momentum_residual)) #Disregard. Makes results worse with g=9.81
 
     
     # In dry regions, enforce u ≈ 0 and h ≈ 0
@@ -167,8 +187,9 @@ def improved_physics_loss(h, u, x, t):
     # Continuity equation loss
     #continuity_loss = torch.mean(continuity_residual**2)
     continuity_loss = torch.mean(torch.abs(continuity_residual))
+    #continuity_loss = torch.mean(pde_weight* torch.abs(continuity_residual))
     
-    total_pde_loss = continuity_loss + momentum_loss + 0.1 * (dry_h_loss + dry_u_loss)
+    total_pde_loss = continuity_loss + momentum_weight * momentum_loss + 0.1 * (dry_h_loss + dry_u_loss)
     
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
@@ -244,15 +265,11 @@ def exact_dam_break_solution(x, t):
 # More focused sampling near dam
 # More focused sampling near dam
 x_dam_dense = torch.linspace(dam_position - 0.5, dam_position + 0.5, num_collocation_points // 2).reshape(-1, 1)
-# Instead of uniform over [-π, π], bias toward dam edges
-x_outer_left = torch.rand(num_collocation_points // 4, 1) * (dam_position - x_min) + x_min
-x_outer_right = torch.rand(num_collocation_points // 4, 1) * (x_max - dam_position) + dam_position
-x_outer = torch.cat([x_outer_left, x_outer_right], dim=0)
-#x_outer = torch.rand(num_collocation_points // 2, 1) * (x_max - x_min) + x_min
+x_outer = torch.rand(num_collocation_points // 2, 1) * (x_max - x_min) + x_min
 x_collocation = torch.cat([x_dam_dense, x_outer], dim=0)
 
-t_early = torch.rand(num_collocation_points // 4, 1) * 0.1
-t_late = torch.rand(num_collocation_points // 2, 1) * 0.9 + 0.1
+t_early = torch.rand(num_collocation_points // 2, 1) * 0.1
+t_late = torch.rand(num_collocation_points // 2, 1) * 0.9 + 0.1 
 t_collocation = torch.cat([t_early, t_late], dim=0)
 
 # Initial condition points
