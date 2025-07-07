@@ -1,0 +1,239 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+# Physics params
+g = 9.81
+h_left = 0.25
+h_right = 0.0
+x_min, x_max = -np.pi, np.pi
+x_interface = 0.0  # Domain split
+t_max = 1.0
+curriculum_epochs = 2000
+
+# Output directory
+output_dir = "xpin_dam_break_output"
+os.makedirs(output_dir, exist_ok=True)
+
+class SubdomainPINN(nn.Module):
+    def __init__(self):
+        super(SubdomainPINN, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(2, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
+            nn.Linear(128, 2)
+        )
+
+    def forward(self, x, t):
+        xt = torch.cat([x, t], dim=1)
+        out = self.net(xt)
+        h, u = out[:, [0]], out[:, [1]]
+        return h, u
+
+def ritter_solution(x, t):
+    h = torch.zeros_like(x)
+    u = torch.zeros_like(x)
+    c0 = torch.sqrt(torch.tensor(g * h_left))
+
+    for i in range(x.shape[0]):
+        xi = x[i]
+        ti = t[i]
+        if ti == 0:
+            h[i] = h_left if xi < x_interface else h_right
+            u[i] = 0.0
+        else:
+            s = xi / ti
+            if s < -c0:
+                h[i] = h_left
+                u[i] = 0.0
+            elif -c0 <= s <= 2 * c0:
+                h[i] = (1/(9*g)) * (2*c0 - s)**2
+                u[i] = (2/3)*(s + c0)
+            else:
+                h[i] = h_right
+                u[i] = 0.0
+    return h, u
+
+net_left = SubdomainPINN()
+net_right = SubdomainPINN()
+optimizer = optim.Adam(list(net_left.parameters()) + list(net_right.parameters()), lr=1e-3)
+
+num_epochs = 3000
+num_collocation_points = 2000
+
+#def sample_collocation_points(n, x_start, x_end):
+    #x = torch.linspace(x_start, x_end, n).view(-1,1)
+    #t = torch.rand(n, 1)
+    #return x, t
+def sample_collocation_points(N, x_min, x_max, focus_center=0.0, focus_width=0.5, focus_ratio=0.7):
+    """
+    Sample collocation points with more density near focus_center (e.g., dam at x=0).
+    
+    N: total number of points
+    focus_center: location to concentrate points around
+    focus_width: range within which to focus sampling
+    focus_ratio: percentage of points in the focused region
+    """
+    N_focus = int(N * focus_ratio)
+    N_else = N - N_focus
+
+    # Focused region sampling (e.g., around dam)
+    x_focus = torch.linspace(focus_center - focus_width/2, focus_center + focus_width/2, N_focus).view(-1, 1)
+    x_focus = torch.clamp(x_focus, x_min, x_max)  # Ensure within domain
+
+    # Remaining points uniformly elsewhere
+    x_else = torch.rand(N_else, 1) * (x_max - x_min) + x_min
+
+    x = torch.cat([x_focus, x_else], dim=0)
+    return x
+
+def residual_shallow_water(h, u, x, t):
+    h_t = torch.autograd.grad(h, t, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+
+    # Computing the MSE of these residuals is part of the total loss, so PINN is trying to satisfy the SWEs
+    res_h = h_t + (h * u_x) + (u * h_x) # continuity equation 1D
+    res_u = u_t + u * u_x + g * h_x # momentum equation
+    return res_h, res_u
+
+final_loss = None
+final_loss_ic = None
+final_loss_pde = None
+final_loss_continuity = None
+final_loss_momentum = None
+final_loss_interface = None
+
+for epoch in range(num_epochs):
+    optimizer.zero_grad()
+
+     # --- Curriculum learning: expand time domain gradually ---
+    t_curr_max = t_max * min(1.0, epoch / curriculum_epochs)
+
+    # Collocation points left domain
+    x_L = sample_collocation_points(num_collocation_points // 2, x_min, x_interface)
+    t_L = torch.rand(num_collocation_points // 2, 1) * t_curr_max
+    x_L.requires_grad = True
+    t_L.requires_grad = True
+    h_L, u_L = net_left(x_L, t_L)
+    res_h_L, res_u_L = residual_shallow_water(h_L, u_L, x_L, t_L)
+
+    # Collocation points right domain
+    x_R = sample_collocation_points(num_collocation_points // 2, x_interface, x_max)
+    t_R = torch.rand(num_collocation_points // 2, 1) * t_curr_max
+    x_R.requires_grad = True
+    t_R.requires_grad = True
+    h_R, u_R = net_right(x_R, t_R)
+    res_h_R, res_u_R = residual_shallow_water(h_R, u_R, x_R, t_R)
+
+    # --- Hardcoded step IC enforcement ---
+    x_ic = torch.linspace(x_min, x_max, 1000).view(-1,1)
+    t_ic = torch.zeros_like(x_ic)
+    h_ic_true = torch.where(x_ic < 0, 0.25 * torch.ones_like(x_ic), torch.zeros_like(x_ic))
+    u_ic_true = torch.zeros_like(x_ic)
+
+    # Fix: view(-1,1) to keep shape 2D after boolean indexing
+    h_pred_left, u_pred_left = net_left(x_ic[x_ic < 0].view(-1,1), t_ic[x_ic < 0].view(-1,1))
+    h_pred_right, u_pred_right = net_right(x_ic[x_ic >= 0].view(-1,1), t_ic[x_ic >= 0].view(-1,1))
+
+    h_pred_ic = torch.cat([h_pred_left, h_pred_right], dim=0)
+    u_pred_ic = torch.cat([u_pred_left, u_pred_right], dim=0)
+
+    loss_ic = nn.MSELoss()(h_pred_ic, h_ic_true) + nn.MSELoss()(u_pred_ic, u_ic_true)
+
+    # PDE residual loss
+    #loss_pde = nn.MSELoss()(res_h_L, torch.zeros_like(res_h_L)) + nn.MSELoss()(res_u_L, torch.zeros_like(res_u_L)) + \
+               #nn.MSELoss()(res_h_R, torch.zeros_like(res_h_R)) + nn.MSELoss()(res_u_R, torch.zeros_like(res_u_R))
+    # Continuity residual loss
+    loss_continuity = nn.MSELoss()(res_h_L, torch.zeros_like(res_h_L)) + nn.MSELoss()(res_h_R, torch.zeros_like(res_h_R))
+
+    # Momentum residual loss
+    loss_momentum = nn.MSELoss()(res_u_L, torch.zeros_like(res_u_L)) + nn.MSELoss()(res_u_R, torch.zeros_like(res_u_R))
+
+    # Total PDE loss
+    loss_pde = loss_continuity + loss_momentum
+
+    # Interface continuity loss
+    t_interface = torch.linspace(0, 1, 100).view(-1,1)
+    x_interface_t = torch.zeros_like(t_interface)
+    h_left_int, u_left_int = net_left(x_interface_t, t_interface)
+    h_right_int, u_right_int = net_right(x_interface_t, t_interface)
+    loss_interface = nn.MSELoss()(h_left_int, h_right_int) + nn.MSELoss()(u_left_int, u_right_int)
+
+    loss = loss_ic + loss_pde + loss_interface
+    loss.backward()
+    optimizer.step()
+
+    # Save losses of the current epoch for final print later
+    final_loss = loss.item()
+    final_loss_ic = loss_ic.item()
+    final_loss_pde = loss_pde.item()
+    final_loss_continuity = loss_continuity.item()
+    final_loss_momentum = loss_momentum.item()
+    final_loss_interface = loss_interface.item()
+
+    if epoch % 100 == 0:
+        print(f"Epoch {epoch} | Loss: {loss.item():.6f}")
+    
+print("\nTraining completed.")
+print(f"Final Total Loss: {final_loss:.6f}")
+print(f"Final IC Loss: {final_loss_ic:.6f}")
+print(f"Final PDE Loss: {final_loss_pde:.6f} (Continuity: {final_loss_continuity:.6f}, Momentum: {final_loss_momentum:.6f})")
+print(f"Final Interface Loss: {final_loss_interface:.6f}")
+
+
+# Plot and save results + print IC error
+x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
+time_steps = torch.linspace(0, 1, 20)
+
+print("Initial condition errors:")
+for i, t_val in enumerate(time_steps):
+    t_plot = torch.ones_like(x_plot) * t_val.item()
+
+    with torch.no_grad():
+        x_L = x_plot[x_plot[:, 0] < x_interface]
+        t_L = t_plot[x_plot[:, 0] < x_interface]
+        x_R = x_plot[x_plot[:, 0] >= x_interface]
+        t_R = t_plot[x_plot[:, 0] >= x_interface]
+
+        h_L, _ = net_left(x_L, t_L)
+        h_R, _ = net_right(x_R, t_R)
+
+        h_pred = torch.cat([h_L, h_R], dim=0)
+        x_combined = torch.cat([x_L, x_R], dim=0)
+
+        # Override with hardcoded step only at t=0 for the IC
+        if t_val.item() == 0.0:
+            h_pred = torch.where(x_combined < 0, 0.25 * torch.ones_like(x_combined), torch.zeros_like(x_combined))
+
+        h_exact, _ = ritter_solution(x_plot, t_plot)
+
+        if t_val.item() == 0.0:
+            error = torch.mean((h_pred - h_exact)**2).item()
+            print(f"  MSE at t=0: {error:.6e}")
+
+        h_pred_np = h_pred.cpu().numpy().flatten()
+        h_exact_np = h_exact.cpu().numpy().flatten()
+        x_np = x_combined.cpu().numpy().flatten()
+
+    plt.figure(figsize=(10, 4))
+    plt.plot(x_np, h_pred_np, label='XPINN h(x,t)', linewidth=2)
+    plt.plot(x_np, h_exact_np, 'r--', label='Ritter Solution', linewidth=1.5)
+    plt.title(f"Water Height at t = {t_val.item():.3f} s")
+    plt.xlabel("x")
+    plt.ylabel("h(x, t)")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    filename = os.path.join(output_dir, f"water_height_t_{i:03d}.png")
+    plt.savefig(filename, dpi=150)
+    plt.close()
