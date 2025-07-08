@@ -9,4 +9,4 @@ h_pred.txt
 .gitignore
 h_true.txt
 x_initial.txt
-swe/
+swe/temp
