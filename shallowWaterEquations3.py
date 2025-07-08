@@ -7,6 +7,9 @@ import numpy as np
 import os
 import time
 
+# Set the environment variable
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
+
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
 H0 = 0.25      # Mean water depth (m)
@@ -46,21 +49,24 @@ os.makedirs(output_dir, exist_ok=True)
 
 # ADD THIS NEW FUNCTION - Curriculum Learning Weights
 def get_curriculum_weights(epoch, total_epochs):
-    progress = epoch / total_epochs
+    # progress = epoch / total_epochs
 
-    if progress < 0.1:
-        ic_weight = 100.0
-        pde_weight = 1.0
-        bc_weight = 1.0
-    elif progress < 0.3:
-        ic_weight = 50.0
-        pde_weight = 50.0
-        bc_weight = 10.0
-    else:
-        ic_weight = 10.0
-        pde_weight = 500.0
-        bc_weight = 100.0
+    # if progress < 0.1:
+    #     ic_weight = 100.0
+    #     pde_weight = 1.0
+    #     bc_weight = 1.0
+    # elif progress < 0.3:
+    #     ic_weight = 50.0
+    #     pde_weight = 50.0
+    #     bc_weight = 10.0
+    # else:
+    #     ic_weight = 10.0
+    #     pde_weight = 500.0
+    #     bc_weight = 100.0
 
+    ic_weight = 100.0
+    pde_weight = 10.0
+    bc_weight = 10.0
     return ic_weight, pde_weight, bc_weight
 
 
@@ -131,8 +137,6 @@ class ImprovedPINN_SWE(nn.Module):
             torch.nn.init.xavier_normal_(m.weight, gain=0.5)
             torch.nn.init.constant_(m.bias, 0)
 
-    
-    
     def forward(self, x, t):
         # Normalize inputs
         x_norm = 2 * (x - x_min) / (x_max - x_min) - 1
@@ -233,15 +237,16 @@ def initial_condition_loss(h_pred, u_pred, x_initial):
     dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
     dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
 
-
-    return loss_h + loss_u + 2.0 * (dam_loss_h + dam_loss_u)
+    #return loss_h + loss_u # Gives results worse than with "Extra focus on dam break region"
+    return loss_h + loss_u + 30.0 * (dam_loss_h + dam_loss_u)
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
     Simple outflow boundary conditions
     """
+    return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2))
     # Minimize reflection by penalizing large velocities at boundaries
-    return 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
+    #return 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
 def exact_dam_break_solution(x, t):
     """
@@ -358,14 +363,14 @@ for pre_epoch in range(200):
     optimizer.step()
 
     if (pre_epoch + 1) % 20 == 0:
-        print(f"Pretraining Epoch {pre_epoch+1}/100 - IC Loss: {loss_ic.item():.4e}")
+        print(f"Pretraining Epoch {pre_epoch+1}/200 - IC Loss: {loss_ic.item():.4e}")
 
 # Reset LR scheduler (optional but recommended)
 scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.5)
 
 print(f"Domain: x ∈ [{x_min}, {x_max}], t ∈ [{t_min}, {t_max}]")
 print(f"Dam break at x = {dam_position}, h_left = {h_left}, h_right = {h_right}")
-print(f"Training phases: IC focus (10%) -> Transition (50%) -> Physics focus (40%)")
+#print(f"Training phases: IC focus (10%) -> Transition (50%) -> Physics focus (40%)")
 
 start_time = time.time()
 loss_history = []
@@ -375,8 +380,6 @@ model.train()
 for epoch in range(epochs):
     optimizer.zero_grad()
     
-    
-
     # Initial condition loss
     h_initial_pred, u_initial_pred = model(x_initial, t_initial)
     loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial)
@@ -392,14 +395,14 @@ for epoch in range(epochs):
     loss_boundary = boundary_condition_loss(h_boundary_left, u_boundary_left, 
                                           h_boundary_right, u_boundary_right)
 
-    
-    # Total loss
-    #loss = lambda_ic * loss_initial + lambda_pde * loss_pde + lambda_bc * loss_boundary
-        #loss = lambda_ic_curr * loss_initial + lambda_pde_curr * loss_pde + lambda_bc_curr * loss_boundary
-    lambda_ic_curr, lambda_pde_curr, lambda_bc_curr = get_curriculum_weights(epoch, epochs)
     # Compute Ritter supervision loss
     loss_supervise = ritter_supervision_loss(model, x_supervise, t_supervise)
 
+    lambda_ic_curr, lambda_pde_curr, lambda_bc_curr = get_curriculum_weights(epoch, epochs)
+
+    # Total loss
+    #loss = lambda_ic * loss_initial + lambda_pde * loss_pde + lambda_bc * loss_boundary
+    #loss = lambda_ic_curr * loss_initial + lambda_pde_curr * loss_pde + lambda_bc_curr * loss_boundary
     # Final total loss with hybrid term
     loss = (
         lambda_ic_curr * loss_initial
@@ -414,7 +417,8 @@ for epoch in range(epochs):
         h_train_mean = h_collocation.mean().item()
         h_train_std = h_collocation.std().item()
         h_train_max = h_collocation.max().item()
-        print(f"[Epoch {epoch+1}] h_mean: {h_train_mean:.4f}, h_std: {h_train_std:.4f}, h_max: {h_train_max:.4f}")
+        #print(f"[Epoch {epoch+1}] h_mean: {h_train_mean:.4f}, h_std: {h_train_std:.4f}, h_max: {h_train_max:.4f}")
+    
     # Gradient clipping
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     
@@ -423,15 +427,9 @@ for epoch in range(epochs):
     
     loss_history.append(loss.item())
     
-    if (epoch + 1) % 200 == 0:
-        if epoch < epochs * 0.3:
-            phase = "IC Focus"
-        elif epoch < epochs * 0.7:
-            phase = "Transition"
-        else:
-            phase = "Physics Focus"
-        print(f"Epoch {epoch+1}/{epochs} - Phase: {phase}")
-        #print(f"  Curriculum Weights - IC: {lambda_ic_curr:.1f}, PDE: {lambda_pde_curr:.1f}, BC: {lambda_bc_curr:.1f}")
+    if (epoch + 1) % 100 == 0:
+        print(f"Epoch {epoch+1}/{epochs}")
+        print(f"  Curriculum Weights - IC: {lambda_ic_curr:.1f}, PDE: {lambda_pde_curr:.1f}, BC: {lambda_bc_curr:.1f}")
         print(f"  Total Loss: {loss.item():.4e}")
         print(f"  IC Loss: {loss_initial.item():.4e}")
         print(f"  PDE Loss: {loss_pde.item():.4e}")
