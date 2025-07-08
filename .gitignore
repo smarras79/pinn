@@ -2,3 +2,11 @@ myenv
 solution_images
 square_grid_plots
 grid_plots
+dam_loss_h.txt
+dam_region_mask.txt
+h_pred-h_true.txt
+h_pred.txt
+.gitignore
+h_true.txt
+x_initial.txt
+swe/

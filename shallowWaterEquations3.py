@@ -23,8 +23,9 @@ L = x_max - x_min
 lambda_ic = 10.0 # Reduced emphasis slightly
 lambda_pde = 1000.0 # Increased emphasis
 lambda_bc = 50.0 # Increased moderately
+lambda_loss_supervise = 0.0 # Supervision loss weight
 
-momentum_weight = 2.0 # Make momentum PDE more important
+momentum_weight = 1.2 # Make momentum PDE more important
 
 # Training parameters
 num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
@@ -44,7 +45,7 @@ u_right = 0.0
 num_frequencies=6
 
 # Output directory
-output_dir = "swe_solution_fixed_" + str(epochs)
+output_dir = "swe/swe_solution_fixed_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 # ADD THIS NEW FUNCTION - Curriculum Learning Weights
@@ -408,7 +409,7 @@ for epoch in range(epochs):
         lambda_ic_curr * loss_initial
         + lambda_pde_curr * loss_pde
         + lambda_bc_curr * loss_boundary
-        + 0.1 * loss_supervise  # supervision weight
+        + lambda_loss_supervise * loss_supervise  # supervision weight
     )
 
     loss.backward()
