@@ -30,7 +30,7 @@ momentum_weight = 1.2 # Make momentum PDE more important
 # Training parameters
 num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
 num_boundary_points = 200
-epochs = 6000
+epochs = 1500
 num_collocation_points = 6000
 learning_rate = 1e-3
 num_time_steps = 20
@@ -38,7 +38,7 @@ num_time_steps = 20
 # Initial condition parameters
 dam_position = 0.0
 h_left = 0.25
-h_right = 0.0
+h_right = 0.01
 u_left = 0.0
 u_right = 0.0
 
@@ -191,7 +191,7 @@ def improved_physics_loss(h, u, x, t):
     momentum_residual = u_t + u * u_x + g * h_x
 
     # Wet/dry mask
-    wet_threshold = 1e-2 #1e-3
+    wet_threshold = 1e-1 # change these
     wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
     dry_mask = 1.0 - wet_mask
 
