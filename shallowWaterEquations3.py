@@ -30,7 +30,7 @@ momentum_weight = 1.2 # Make momentum PDE more important
 # Training parameters
 num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
 num_boundary_points = 200
-epochs = 1500
+epochs = 6000
 num_collocation_points = 6000
 learning_rate = 1e-3
 num_time_steps = 20
@@ -45,7 +45,7 @@ u_right = 0.0
 num_frequencies=6
 
 # Output directory
-output_dir = "swe/swe_solution_fixed_" + str(epochs)
+output_dir = "swe/temp/swe_solution_fixed_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 # ADD THIS NEW FUNCTION - Curriculum Learning Weights
@@ -191,19 +191,21 @@ def improved_physics_loss(h, u, x, t):
     momentum_residual = u_t + u * u_x + g * h_x
 
     # Wet/dry mask
-    wet_threshold = 1e-3
-    wet_mask = torch.sigmoid((h - wet_threshold) * 1000)
+    wet_threshold = 1e-2 #1e-3
+    wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
     dry_mask = 1.0 - wet_mask
 
     # Discontinuity detector: total gradient magnitude
     grad_strength = torch.abs(h_x) + torch.abs(u_x)
 
     # Gradient-based weighting: reduce loss impact where solution is steep
-    weight_map = 1.0 / (1.0 + 10.0 * grad_strength.detach())
+    weight_map = 1.0 / (1.0 + 0.1 * grad_strength.detach())
+    #weight_map = 1.0 / (1.0 + 10.0 * grad_strength.detach())
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(weight_map * continuity_residual**2)
-    momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
+    momentum_loss = torch.mean(weight_map *  momentum_residual**2)
+    #momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
 
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
