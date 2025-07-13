@@ -30,10 +30,15 @@ momentum_weight = 1.2 # Make momentum PDE more important
 # Training parameters
 num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
 num_boundary_points = 200
-epochs = 1500
+epochs = 1000
 num_collocation_points = 6000
 learning_rate = 1e-3
 num_time_steps = 20
+
+#Scheduler tuning parameters
+scheduler_step_size_frequency = 4 #Number of times we want scheduler to reduce LR during full training with epochs
+scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
+scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 
 # Initial condition parameters
 dam_position = 0.0
@@ -167,7 +172,7 @@ model = ImprovedPINN_SWE()
 
 # Optimizer with scheduled learning rate
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.5)
+scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
 
 def improved_physics_loss(h, u, x, t):
     """
@@ -199,13 +204,18 @@ def improved_physics_loss(h, u, x, t):
     grad_strength = torch.abs(h_x) + torch.abs(u_x)
 
     # Gradient-based weighting: reduce loss impact where solution is steep
-    weight_map = 1.0 / (1.0 + 0.1 * grad_strength.detach())
-    #weight_map = 1.0 / (1.0 + 10.0 * grad_strength.detach())
+    weight_map = 1.0 / (1.0 + 0.1 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(weight_map * continuity_residual**2)
     momentum_loss = torch.mean(weight_map *  momentum_residual**2)
     #momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
+
+    # Extra focus on dam break region
+    # dam_region_mask = torch.abs(x - dam_position) < 0.3
+    # dam_loss_continuity_residual = torch.mean(dam_region_mask.float() * (continuity_residual)**2)
+    # dam_loss_momentum_residual = 10 * torch.mean(dam_region_mask.float() * (momentum_residual)**2)
+
 
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
@@ -213,7 +223,6 @@ def improved_physics_loss(h, u, x, t):
 
     # Combine total PDE loss
     total_pde_loss = continuity_loss + momentum_weight * momentum_loss + 0.1 * (dry_h_loss + dry_u_loss)
-
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
         'momentum': momentum_loss.item(),
@@ -240,14 +249,14 @@ def initial_condition_loss(h_pred, u_pred, x_initial):
     dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
     dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
 
-    #return loss_h + loss_u # Gives results worse than with "Extra focus on dam break region"
-    return loss_h + loss_u + 30.0 * (dam_loss_h + dam_loss_u)
+    return loss_h + loss_u + 30.0 * (dam_loss_h + dam_loss_u) # Gives bad results if "Extra focus on dam break region" is not used
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
     Simple outflow boundary conditions
     """
     return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2))
+    #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
     # Minimize reflection by penalizing large velocities at boundaries
     #return 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
@@ -369,7 +378,7 @@ for pre_epoch in range(200):
         print(f"Pretraining Epoch {pre_epoch+1}/200 - IC Loss: {loss_ic.item():.4e}")
 
 # Reset LR scheduler (optional but recommended)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.5)
+scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
 
 print(f"Domain: x ∈ [{x_min}, {x_max}], t ∈ [{t_min}, {t_max}]")
 print(f"Dam break at x = {dam_position}, h_left = {h_left}, h_right = {h_right}")
