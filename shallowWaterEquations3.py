@@ -25,7 +25,7 @@ lambda_pde = 1000.0 # Increased emphasis
 lambda_bc = 50.0 # Increased moderately
 lambda_loss_supervise = 0.0 # Supervision loss weight
 
-momentum_weight = 1.2 # Make momentum PDE more important
+momentum_weight = 1.0 # Make momentum PDE more important
 
 # Training parameters
 num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
@@ -196,7 +196,7 @@ def improved_physics_loss(h, u, x, t):
     momentum_residual = u_t + u * u_x + g * h_x
 
     # Wet/dry mask
-    wet_threshold = 1e-1 # change these
+    wet_threshold = 0.02 #1e-1 # change these
     wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
     dry_mask = 1.0 - wet_mask
 
@@ -204,12 +204,12 @@ def improved_physics_loss(h, u, x, t):
     grad_strength = torch.abs(h_x) + torch.abs(u_x)
 
     # Gradient-based weighting: reduce loss impact where solution is steep
-    weight_map = 1.0 / (1.0 + 0.1 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
+    weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(weight_map * continuity_residual**2)
-    momentum_loss = torch.mean(weight_map *  momentum_residual**2)
-    #momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
+    #momentum_loss = torch.mean(weight_map *  momentum_residual**2)
+    momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
     # dam_region_mask = torch.abs(x - dam_position) < 0.3
@@ -255,8 +255,8 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     """
     Simple outflow boundary conditions
     """
-    return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2))
-    #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
+    #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2))
+    return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
     # Minimize reflection by penalizing large velocities at boundaries
     #return 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
