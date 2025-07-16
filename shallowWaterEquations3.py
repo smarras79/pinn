@@ -23,7 +23,7 @@ L = x_max - x_min
 lambda_ic = 10.0 # Reduced emphasis slightly
 lambda_pde = 1000.0 # Increased emphasis
 lambda_bc = 50.0 # Increased moderately
-lambda_loss_supervise = 0.0 # Supervision loss weight
+lambda_loss_supervise = 0.1 # Supervision loss weight
 
 momentum_weight = 1.0 # Make momentum PDE more important
 
@@ -43,7 +43,7 @@ scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch inte
 # Initial condition parameters
 dam_position = 0.0
 h_left = 0.25
-h_right = 0.01
+h_right = 0.0
 u_left = 0.0
 u_right = 0.0
 
@@ -53,26 +53,38 @@ num_frequencies=6
 output_dir = "swe/temp/swe_solution_fixed_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
-# ADD THIS NEW FUNCTION - Curriculum Learning Weights
-def get_curriculum_weights(epoch, total_epochs):
-    # progress = epoch / total_epochs
-
-    # if progress < 0.1:
-    #     ic_weight = 100.0
-    #     pde_weight = 1.0
-    #     bc_weight = 1.0
-    # elif progress < 0.3:
-    #     ic_weight = 50.0
-    #     pde_weight = 50.0
-    #     bc_weight = 10.0
-    # else:
-    #     ic_weight = 10.0
-    #     pde_weight = 500.0
-    #     bc_weight = 100.0
-
-    ic_weight = 100.0
-    pde_weight = 10.0
+def get_weights(epoch, total_epochs):
+    ic_weight = 100.0 #100
+    pde_weight = 10.0 #10
     bc_weight = 10.0
+    return ic_weight, pde_weight, bc_weight
+
+#Curriculum Learning Weights
+def get_curriculum_weights(epoch, total_epochs):
+    progress = epoch / total_epochs
+
+    if progress < 0.2:
+        ic_weight = 100.0
+        pde_weight = 10.0
+        bc_weight = 10.0
+    else:
+        ic_weight = 50.0
+        pde_weight = 50.0
+        bc_weight = 10.0
+
+    if progress < 0.1:
+        ic_weight = 100.0
+        pde_weight = 1.0
+        bc_weight = 1.0
+    elif progress < 0.3:
+        ic_weight = 50.0
+        pde_weight = 50.0
+        bc_weight = 10.0
+    else:
+        ic_weight = 10.0
+        pde_weight = 500.0
+        bc_weight = 100.0
+
     return ic_weight, pde_weight, bc_weight
 
 
@@ -208,14 +220,12 @@ def improved_physics_loss(h, u, x, t):
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(weight_map * continuity_residual**2)
-    #momentum_loss = torch.mean(weight_map *  momentum_residual**2)
     momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
-    # dam_region_mask = torch.abs(x - dam_position) < 0.3
-    # dam_loss_continuity_residual = torch.mean(dam_region_mask.float() * (continuity_residual)**2)
-    # dam_loss_momentum_residual = 10 * torch.mean(dam_region_mask.float() * (momentum_residual)**2)
-
+    #dam_region_mask = torch.abs(x - dam_position) < 0.1
+    #dam_loss_continuity_residual = torch.mean(weight_map * dam_region_mask.float() * (continuity_residual)**2)
+    #dam_region_momentum_loss = torch.mean(weight_map * dam_region_mask.float() * (momentum_residual)**2)
 
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
@@ -223,6 +233,7 @@ def improved_physics_loss(h, u, x, t):
 
     # Combine total PDE loss
     total_pde_loss = continuity_loss + momentum_weight * momentum_loss + 0.1 * (dry_h_loss + dry_u_loss)
+
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
         'momentum': momentum_loss.item(),
@@ -230,35 +241,54 @@ def improved_physics_loss(h, u, x, t):
         'dry_u': dry_u_loss.item()
     }
 
+
 def initial_condition_loss(h_pred, u_pred, x_initial):
     """
     Improved initial condition loss
     """
     # True initial conditions
+    # Original condition
+    # h_true = torch.where(x_initial < dam_position, 
+    #                     torch.tensor(h_left, dtype=h_pred.dtype, device=h_pred.device), 
+    #                     torch.tensor(0.0, dtype=h_pred.dtype, device=h_pred.device))
+    
+    # Attempt to make it softer
+    # h_true = torch.where(x_initial < dam_position, torch.tensor(h_left, dtype=h_pred.dtype, device=h_pred.device),
+    #             torch.where((x_initial >= dam_position) & (x_initial < 0.02), torch.tensor(h_left*0.40, dtype=h_pred.dtype, device=h_pred.device), 
+    #                     torch.where((x_initial >= 0.02) & (x_initial < 0.04),torch.tensor(h_left*0.32, dtype=h_pred.dtype, device=h_pred.device),
+    #                         torch.where((x_initial >= 0.04) & (x_initial < 0.06),torch.tensor(h_left*0.24, dtype=h_pred.dtype, device=h_pred.device),
+    #                             torch.where((x_initial >= 0.06) & (x_initial < 0.08),torch.tensor(h_left*0.16, dtype=h_pred.dtype, device=h_pred.device),
+    #                                 torch.where((x_initial >= 0.08) & (x_initial<0.1),torch.tensor(h_left*0.12, dtype=h_pred.dtype, device=h_pred.device),
+    #                                     torch.tensor(0.0, dtype=h_pred.dtype, device=h_pred.device)))))))
+    
+    # Using a sigmoid function to make it softer on right side
+    # Initial condition wet mask
+    x_initial_ic = torch.linspace(0, x_max, num_initial_points).reshape(-1, 1)
+    mask = torch.sigmoid((x_initial_ic - 0.01) * 10)
+    mask_complement = 1.0 - mask
+    h_left_initial = torch.ones(num_initial_points, 1) * h_left
     h_true = torch.where(x_initial < dam_position, 
                         torch.tensor(h_left, dtype=h_pred.dtype, device=h_pred.device), 
-                        torch.tensor(0.0, dtype=h_pred.dtype, device=h_pred.device))
+                        mask_complement * h_left_initial)
+    
     u_true = torch.zeros_like(u_pred)
     
     # Standard L2 loss
     loss_h = torch.mean((h_pred - h_true)**2)
     loss_u = torch.mean((u_pred - u_true)**2)
     
-    # Extra focus on dam break region
-    dam_region_mask = torch.abs(x_initial - dam_position) < 0.3
-    dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
-    dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
+    # Extra focus on dam break region. Not using for now
+    # dam_region_mask = torch.abs(x_initial - dam_position) < 0.3
+    # dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
+    # dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
 
-    return loss_h + loss_u + 30.0 * (dam_loss_h + dam_loss_u) # Gives bad results if "Extra focus on dam break region" is not used
+    return loss_h + loss_u #+ 30.0 * (dam_loss_h + dam_loss_u) # Gives bad results if "Extra focus on dam break region" is not used
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
     Simple outflow boundary conditions
     """
-    #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2))
     return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
-    # Minimize reflection by penalizing large velocities at boundaries
-    #return 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
 def exact_dam_break_solution(x, t):
     """
@@ -364,18 +394,17 @@ print("Starting improved training for 1D Shallow Water Equations...")
 # === PHASE 0: IC Pretraining ===
 print("\nPretraining only on Initial Conditions for 200 epochs...\n")
 
-for pre_epoch in range(200):
+for pre_epoch in range(1200):
     optimizer.zero_grad()
 
     h_initial_pred, u_initial_pred = model(x_initial, t_initial)
     loss_ic = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial)
-
     loss_ic.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
 
     if (pre_epoch + 1) % 20 == 0:
-        print(f"Pretraining Epoch {pre_epoch+1}/200 - IC Loss: {loss_ic.item():.4e}")
+        print(f"Pretraining Epoch {pre_epoch+1}/1200 - IC Loss: {loss_ic.item():.4e}")
 
 # Reset LR scheduler (optional but recommended)
 scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
@@ -408,19 +437,16 @@ for epoch in range(epochs):
                                           h_boundary_right, u_boundary_right)
 
     # Compute Ritter supervision loss
-    loss_supervise = ritter_supervision_loss(model, x_supervise, t_supervise)
+    #loss_supervise = ritter_supervision_loss(model, x_supervise, t_supervise)
 
-    lambda_ic_curr, lambda_pde_curr, lambda_bc_curr = get_curriculum_weights(epoch, epochs)
+    lambda_ic_curr, lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
 
     # Total loss
-    #loss = lambda_ic * loss_initial + lambda_pde * loss_pde + lambda_bc * loss_boundary
-    #loss = lambda_ic_curr * loss_initial + lambda_pde_curr * loss_pde + lambda_bc_curr * loss_boundary
-    # Final total loss with hybrid term
     loss = (
         lambda_ic_curr * loss_initial
         + lambda_pde_curr * loss_pde
         + lambda_bc_curr * loss_boundary
-        + lambda_loss_supervise * loss_supervise  # supervision weight
+        #+ lambda_loss_supervise * loss_supervise  # supervision weight
     )
 
     loss.backward()
