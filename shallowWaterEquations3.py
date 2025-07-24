@@ -165,14 +165,6 @@ class ImprovedPINN_SWE(nn.Module):
         h_raw = self.h_head(features)
         u_raw = self.u_head(features)
 
-        # During evaluation, return perfect IC at t=0
-        if not self.training and torch.all(t == 0):
-            h = torch.where(x < dam_position,
-                        h_left * torch.ones_like(x),
-                        torch.zeros_like(x))
-            u = torch.zeros_like(x)
-            return h, u
-
         return h_raw, u_raw
     
         #epsilon = 1e-3
@@ -200,6 +192,7 @@ def improved_physics_loss(h, u, x, t):
 
     hu = h * u
     hu_x = torch.autograd.grad(hu, x, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
+    h, u = model(x,t)
 
     # Continuity residual: ∂h/∂t + ∂(hu)/∂x = 0
     continuity_residual = h_t + hu_x
@@ -209,8 +202,12 @@ def improved_physics_loss(h, u, x, t):
 
     # Wet/dry mask
     wet_threshold = 0.02 #1e-1 # change these
-    wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
+    # Sigmoid is not giving good results. 
+    #wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
+    #wet_mask = (h > 0.01).float()
+    wet_mask = (h > 0).float()
     dry_mask = 1.0 - wet_mask
+    dry_momentum_penalty = torch.mean(dry_mask * (h * u)**2)
 
     # Discontinuity detector: total gradient magnitude
     grad_strength = torch.abs(h_x) + torch.abs(u_x)
@@ -218,21 +215,28 @@ def improved_physics_loss(h, u, x, t):
     # Gradient-based weighting: reduce loss impact where solution is steep
     weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
+    c0 = np.sqrt(g * h_left)
+    dam_front_mask = (x > dam_position) & (x < dam_position + 2 * c0 * t)
+    front_loss_weight = torch.exp(-grad_strength * dam_front_mask.float())
+    combined_weight = front_loss_weight * weight_map
+
     # Weighted PDE residuals
-    continuity_loss = torch.mean(weight_map * continuity_residual**2)
-    momentum_loss = torch.mean(weight_map * wet_mask * momentum_residual**2)
+    continuity_loss = torch.mean(combined_weight * continuity_residual**2)
+    momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
-    #dam_region_mask = torch.abs(x - dam_position) < 0.1
+    dam_region_mask = torch.abs(x - dam_position) < 0.1
     #dam_loss_continuity_residual = torch.mean(weight_map * dam_region_mask.float() * (continuity_residual)**2)
-    #dam_region_momentum_loss = torch.mean(weight_map * dam_region_mask.float() * (momentum_residual)**2)
+    dam_region_momentum_loss = torch.mean(dam_region_mask.float() * (momentum_residual)**2)
+
+    
 
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
     dry_u_loss = torch.mean(dry_mask * u**2)
 
     # Combine total PDE loss
-    total_pde_loss = continuity_loss + momentum_weight * momentum_loss + 0.1 * (dry_h_loss + dry_u_loss)
+    total_pde_loss = continuity_loss + momentum_weight * momentum_loss + 1.0 * (dry_h_loss + dry_u_loss) + 1.0 * dry_momentum_penalty + 1.0 * dam_region_momentum_loss
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
@@ -263,14 +267,15 @@ def initial_condition_loss(h_pred, u_pred, x_initial):
     
     # Using a sigmoid function to make it softer on right side
     # Initial condition wet mask
-    x_initial_ic = torch.linspace(0, x_max, num_initial_points).reshape(-1, 1)
-    mask = torch.sigmoid((x_initial_ic - 0.01) * 10)
+    x_initial_ic = torch.linspace(0.01, x_max, num_initial_points).reshape(-1, 1)
+    mask = torch.sigmoid((x_initial_ic - 0.02) * 80)
     mask_complement = 1.0 - mask
+    h_right_soft = h_left * 0.12 # or even higher temporarily
     h_left_initial = torch.ones(num_initial_points, 1) * h_left
     h_true = torch.where(x_initial < dam_position, 
-                        torch.tensor(h_left, dtype=h_pred.dtype, device=h_pred.device), 
-                        mask_complement * h_left_initial)
-    
+                        h_left * torch.ones_like(x_initial),
+                        mask_complement * h_right_soft)
+    #h_true = sharp_sigmoid_ic(x_initial, hL=h_left, x0=dam_position, sharpness=100)
     u_true = torch.zeros_like(u_pred)
     
     # Standard L2 loss
@@ -392,7 +397,7 @@ t_supervise = torch.ones_like(x_supervise) * 0.5  # mid-time slice
 
 print("Starting improved training for 1D Shallow Water Equations...")
 # === PHASE 0: IC Pretraining ===
-print("\nPretraining only on Initial Conditions for 200 epochs...\n")
+print("\nPretraining only on Initial Conditions for 1200 epochs...\n")
 
 for pre_epoch in range(1200):
     optimizer.zero_grad()
@@ -467,7 +472,7 @@ for epoch in range(epochs):
     
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}")
-        print(f"  Curriculum Weights - IC: {lambda_ic_curr:.1f}, PDE: {lambda_pde_curr:.1f}, BC: {lambda_bc_curr:.1f}")
+        #print(f"  Curriculum Weights - IC: {lambda_ic_curr:.1f}, PDE: {lambda_pde_curr:.1f}, BC: {lambda_bc_curr:.1f}")
         print(f"  Total Loss: {loss.item():.4e}")
         print(f"  IC Loss: {loss_initial.item():.4e}")
         print(f"  PDE Loss: {loss_pde.item():.4e}")
@@ -578,7 +583,7 @@ for i, t_val in enumerate(time_steps):
     plt.tight_layout()
     
     # Add information text
-    info_text = f"Epochs: {epochs} | Curriculum Learning | Points: {num_collocation_points}\n"
+    info_text = f"Epochs: {epochs} | Points: {num_collocation_points}\n"
     info_text += f"Training time: {elapsed_time:.1f}s | Final loss: {loss.item():.4e}"
     plt.figtext(0.5, 0.02, info_text, ha='center', fontsize=9)
     
@@ -590,7 +595,7 @@ plt.figure(figsize=(10, 6))
 plt.semilogy(loss_history, 'b-', linewidth=2)
 plt.xlabel('Epoch')
 plt.ylabel('Total Loss')
-plt.title('Training Loss History - Curriculum Learning')
+plt.title('Training Loss History')
 plt.grid(True, alpha=0.3)
 plt.savefig(os.path.join(output_dir, 'loss_history.png'), dpi=150, bbox_inches='tight')
 plt.close()
