@@ -32,7 +32,7 @@ momentum_weight = 1.0 # Make momentum PDE more important
 # Training parameters
 num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
 num_boundary_points = 200
-epochs = 1000
+epochs = 100
 num_collocation_points = 6000
 learning_rate = 1e-3
 num_time_steps = 20
@@ -43,8 +43,8 @@ scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 
 # Initial condition parameters
-dam_position = 0.0
-h_left = 0.25
+dam_position = 15.0
+h_left = 10.0 #0.33
 h_right = 0.0
 u_left = 0.0
 u_right = 0.0
@@ -252,8 +252,15 @@ def improved_physics_loss(h, u, x, t):
         'dry_u': dry_u_loss.item()
     }
 
+def initial_condition_loss(h_pred, u_pred, x):
+    zb = zb_tensor(x)
+    h_true = torch.where(x < dam_position, 
+                        h_left - zb,
+                        torch.zeros_like(x))
+    u_true = torch.zeros_like(x)
+    return torch.mean((h_pred - h_true)**2) + torch.mean((u_pred - u_true)**2)
 
-def initial_condition_loss(h_pred, u_pred, x_initial):
+#def initial_condition_loss(h_pred, u_pred, x_initial):
     """
     Improved initial condition loss
     """
@@ -274,27 +281,27 @@ def initial_condition_loss(h_pred, u_pred, x_initial):
     
     # Using a sigmoid function to make it softer on right side
     # Initial condition wet mask
-    x_initial_ic = torch.linspace(0.01, x_max, num_initial_points).reshape(-1, 1)
-    mask = torch.sigmoid((x_initial_ic - 0.02) * 80)
-    mask_complement = 1.0 - mask
-    h_right_soft = h_left * 0.12 # or even higher temporarily
-    h_left_initial = torch.ones(num_initial_points, 1) * h_left
-    h_true = torch.where(x_initial < dam_position, 
-                        h_left * torch.ones_like(x_initial),
-                        mask_complement * h_right_soft)
+    #x_initial_ic = torch.linspace(0.01, x_max, num_initial_points).reshape(-1, 1)
+    #mask = torch.sigmoid((x_initial_ic - 0.02) * 80)
+    #mask_complement = 1.0 - mask
+    #h_right_soft = h_left * 0.12 # or even higher temporarily
+    #h_left_initial = torch.ones(num_initial_points, 1) * h_left
+    #h_true = torch.where(x_initial < dam_position, 
+                        #h_left * torch.ones_like(x_initial),
+                        #mask_complement * h_right_soft)
     #h_true = sharp_sigmoid_ic(x_initial, hL=h_left, x0=dam_position, sharpness=100)
-    u_true = torch.zeros_like(u_pred)
+    #u_true = torch.zeros_like(u_pred)
     
     # Standard L2 loss
-    loss_h = torch.mean((h_pred - h_true)**2)
-    loss_u = torch.mean((u_pred - u_true)**2)
+    #loss_h = torch.mean((h_pred - h_true)**2)
+    #loss_u = torch.mean((u_pred - u_true)**2)
     
     # Extra focus on dam break region. Not using for now
     # dam_region_mask = torch.abs(x_initial - dam_position) < 0.3
     # dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
     # dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
 
-    return loss_h + loss_u #+ 30.0 * (dam_loss_h + dam_loss_u) # Gives bad results if "Extra focus on dam break region" is not used
+    #return loss_h + loss_u #+ 30.0 * (dam_loss_h + dam_loss_u) # Gives bad results if "Extra focus on dam break region" is not used
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
@@ -349,16 +356,28 @@ def bump_profile(x_array):
             zb[i] = bump[i]
     return zb
 
+def zb_tensor_for_plotting(x_tensor):
+    bump_height  = 5.0
+    bump_center = 30.0
+    bump_width = 2.0
+    x_np = x_tensor.detach().cpu().numpy().flatten()
+    zb_np = np.where(
+        (x_np > bump_center - bump_width / 2) & (x_np < bump_center + bump_width / 2),
+        bump_height - 1.0 * (x_np - bump_center)**2,
+        0.0
+    )
+    return zb_np
+
 def zb_tensor(x):
     
     # Differentiable parabolic bump centered at x=30, defined using Pytorch
-    bump_height  = 0.4
+    bump_height  = 5.0
     bump_center = 30.0
-    bump_width = 4.0 # Between roughly 28 and 32
+    bump_width = 2.0 # Between roughly 28 and 32
 
     return torch.where(
         (x > bump_center - bump_width / 2) & (x < bump_center + bump_width / 2),
-        bump_height - 0.1 * (x - bump_center)**2,
+        bump_height - 1.0 * (x - bump_center)**2,
         torch.zeros_like(x)
     )
 
@@ -497,6 +516,7 @@ for epoch in range(epochs):
     
     loss_history.append(loss.item())
     
+    
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}")
         #print(f"  Curriculum Weights - IC: {lambda_ic_curr:.1f}, PDE: {lambda_pde_curr:.1f}, BC: {lambda_bc_curr:.1f}")
@@ -539,6 +559,9 @@ for i, t_val in enumerate(time_steps):
     with torch.no_grad():
         h_pred, u_pred = model(x_plot, t_plot)
         h_pred_plot = h_pred.numpy().flatten()
+        # Compute bed elevation and free surface
+        zb_plot = zb_tensor_for_plotting(x_plot)
+        eta_plot = h_pred_plot + zb_plot # Free surface
         u_pred_plot = u_pred.numpy().flatten()
     # STEP 3: Check PDE Residuals at this time step
     # Temporarily enable autograd
@@ -575,10 +598,13 @@ for i, t_val in enumerate(time_steps):
     
     # Water height
     ax1.plot(x_np, h_pred_plot, 'b-', label='PINN h(x,t)', linewidth=2)
-    ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
+    ax1.plot(x_np, eta_plot, 'b-', label='Free surface η = h + zb', linewidth=2)
+    ax1.plot(x_np, zb_plot, 'y--', label='Bottom topography zb(x)', linewidth=1.5)
+    #ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
     ax1.set_ylabel('Water Height h(x,t) [m]')
     ax1.set_title(f'Water Height - t = {t_np:.3f}s')
+    
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     ax1.set_ylim(0, h_left * 1.1)
