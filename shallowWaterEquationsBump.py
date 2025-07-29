@@ -13,14 +13,20 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
 H0 = 0.25      # Mean water depth (m)
-
+sigma = 1.0
 # Domain parameters
 #x_min, x_max = -np.pi, np.pi    # Spatial domain [m]
 x_min, x_max = 0.0, 40.0
 #t_min, t_max = 0.0, 1.0         # Time domain [s]
 t_min, t_max = 0.0, 5.0
 L = x_max - x_min
-
+test_case = 6 # choose between 6 or 7
+if test_case == 6:
+    eta = 0.33
+    q = 0.18
+elif test_case == 7:
+    eta = 2.0
+    q = 4.42
 # Loss function weights - Better balanced
 lambda_ic = 10.0 # Reduced emphasis slightly
 lambda_pde = 1000.0 # Increased emphasis
@@ -44,7 +50,7 @@ scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch inte
 
 # Initial condition parameters
 dam_position = 15.0
-h_left = 10.0 #0.33
+h_left = 0.33
 h_right = 0.0
 u_left = 0.0
 u_right = 0.0
@@ -201,10 +207,12 @@ def improved_physics_loss(h, u, x, t):
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
+    hu_t = torch.autograd.grad(hu, t, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    hu2_x = torch.autograd.grad(h * u**2, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     zb = zb_tensor(x)
     zb_x = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
-    momentum_residual = u_t + u * u_x + g * (h_x + zb_x)
-
+    #momentum_residual = u_t + u * u_x + g * (h_x + zb_x)
+    momentum_residual = hu_t + hu2_x + g * h * zb_x
     #momentum_residual = u_t + u * u_x + g * h_x
 
     # Wet/dry mask
@@ -227,6 +235,10 @@ def improved_physics_loss(h, u, x, t):
     front_loss_weight = torch.exp(-grad_strength * dam_front_mask.float())
     combined_weight = front_loss_weight * weight_map
 
+    # Normalize momentum residual
+    u_scale = 3.5 # Max expected velocity
+    normalized_momentum_residual = momentum_residual / (u_scale + 1e-6)
+
     # Weighted PDE residuals
     continuity_loss = torch.mean(combined_weight * continuity_residual**2)
     momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
@@ -234,10 +246,9 @@ def improved_physics_loss(h, u, x, t):
     # Extra focus on dam break region
     dam_region_mask = torch.abs(x - dam_position) < 0.1
     #dam_loss_continuity_residual = torch.mean(weight_map * dam_region_mask.float() * (continuity_residual)**2)
-    dam_region_momentum_loss = torch.mean(dam_region_mask.float() * (momentum_residual)**2)
+    dam_region_momentum_loss = torch.mean(dam_region_mask.float() * (normalized_momentum_residual)**2)
 
     
-
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
     dry_u_loss = torch.mean(dry_mask * u**2)
@@ -251,14 +262,49 @@ def improved_physics_loss(h, u, x, t):
         'dry_h': dry_h_loss.item(),
         'dry_u': dry_u_loss.item()
     }
+def initial_condition_loss(h_pred, u_pred, x_initial):
+    """
+    Improved initial condition loss
+    """
+    # True initial conditions
+    # Original condition
+    # h_true = torch.where(x_initial < dam_position, 
+    #                     torch.tensor(h_left, dtype=h_pred.dtype, device=h_pred.device), 
+    #                     torch.tensor(0.0, dtype=h_pred.dtype, device=h_pred.device))
+    
+    # Using a sigmoid function to make it softer on right side
+    # Initial condition wet mask
+    x_initial_ic = torch.linspace(0.01, x_max, num_initial_points).reshape(-1, 1)
+    mask = torch.sigmoid((x_initial_ic - 0.02) * 80)
+    mask_complement = 1.0 - mask
+    h_right_soft = h_left * 0.12 # or even higher temporarily
+    h_left_initial = torch.ones(num_initial_points, 1) * h_left
+    h_true = torch.where(x_initial < dam_position, 
+                        h_left * torch.ones_like(x_initial),
+                        mask_complement * h_right_soft)
+    #h_true = sharp_sigmoid_ic(x_initial, hL=h_left, x0=dam_position, sharpness=100)
+    u_true = torch.zeros_like(u_pred)
+    
+    # Standard L2 loss
+    loss_h = torch.mean((h_pred - h_true)**2)
+    loss_u = torch.mean((u_pred - u_true)**2)
+    
+    # Extra focus on dam break region. Not using for now
+    # dam_region_mask = torch.abs(x_initial - dam_position) < 0.3
+    # dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
+    # dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
 
-def initial_condition_loss(h_pred, u_pred, x):
-    zb = zb_tensor(x)
-    h_true = torch.where(x < dam_position, 
-                        h_left - zb,
-                        torch.zeros_like(x))
-    u_true = torch.zeros_like(x)
-    return torch.mean((h_pred - h_true)**2) + torch.mean((u_pred - u_true)**2)
+    return loss_h + loss_u 
+#def initial_condition_loss(h_pred, u_pred, x):
+    #zb = zb_tensor(x)
+    #h_true = eta - zb # free surface elevation minus bump
+    #u_true = q / (h_true + 1e-6)
+
+    #h_true = torch.where(x < dam_position, 
+                        #h_left - zb,
+                        #torch.zeros_like(x))
+    #u_true = torch.zeros_like(x)
+    #return torch.mean((h_pred - h_true)**2) + 10.0 * torch.mean((u_pred - u_true)**2)
 
 #def initial_condition_loss(h_pred, u_pred, x_initial):
     """
@@ -349,7 +395,7 @@ def exact_dam_break_solution(x, t):
     
     return h_exact, u_exact
 def bump_profile(x_array):
-    zb = np.zeros_like(x_array)
+    zb = 0.4 * torch.exp(-((x_array - 30)**2) / (2 * sigma**2))
     bump = 0.4 - 0.1 * (x_array - 30.0)**2
     for i, xi in enumerate(x_array):
         if 28.0 < xi < 32.0:
@@ -357,13 +403,13 @@ def bump_profile(x_array):
     return zb
 
 def zb_tensor_for_plotting(x_tensor):
-    bump_height  = 5.0
+    bump_height  = 0.1
     bump_center = 30.0
-    bump_width = 2.0
+    bump_width = 3.0
     x_np = x_tensor.detach().cpu().numpy().flatten()
     zb_np = np.where(
         (x_np > bump_center - bump_width / 2) & (x_np < bump_center + bump_width / 2),
-        bump_height - 1.0 * (x_np - bump_center)**2,
+        bump_height - 0.1 * (x_np - bump_center)**2,
         0.0
     )
     return zb_np
@@ -371,13 +417,13 @@ def zb_tensor_for_plotting(x_tensor):
 def zb_tensor(x):
     
     # Differentiable parabolic bump centered at x=30, defined using Pytorch
-    bump_height  = 5.0
+    bump_height  = 0.25
     bump_center = 30.0
-    bump_width = 2.0 # Between roughly 28 and 32
+    bump_width = 6.0 # Between roughly 28 and 32
 
     return torch.where(
         (x > bump_center - bump_width / 2) & (x < bump_center + bump_width / 2),
-        bump_height - 1.0 * (x - bump_center)**2,
+        bump_height - 0.1 * (x - bump_center)**2,
         torch.zeros_like(x)
     )
 
@@ -600,7 +646,7 @@ for i, t_val in enumerate(time_steps):
     ax1.plot(x_np, h_pred_plot, 'b-', label='PINN h(x,t)', linewidth=2)
     ax1.plot(x_np, eta_plot, 'b-', label='Free surface η = h + zb', linewidth=2)
     ax1.plot(x_np, zb_plot, 'y--', label='Bottom topography zb(x)', linewidth=1.5)
-    #ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
+    ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
     ax1.set_ylabel('Water Height h(x,t) [m]')
     ax1.set_title(f'Water Height - t = {t_np:.3f}s')
