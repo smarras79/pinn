@@ -41,6 +41,9 @@ u_right = 0.0
 
 num_frequencies=6
 
+lambda_c = 1.0
+lambda_m = 10.0  # Increase if momentum is underfitting
+
 # Output directory
 output_dir = "swe/temp/swe_solution_fixed_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
@@ -141,9 +144,6 @@ def improved_physics_loss(h, u, x, t):
     Physics-informed loss for 1D Shallow Water Equations with gradient-based weighting.
     Penalizes discontinuity regions less and focuses on smooth wave dynamics.
     """
-    lambda_c = 1.0
-    lambda_m = 10.0  # Increase if momentum is underfitting
-
     hu = h * u
     hu2 = h * u**2
     pressure = 0.5 * g * h**2
@@ -192,8 +192,8 @@ def improved_physics_loss(h, u, x, t):
     # Weighted PDE residuals
     # continuity_loss = torch.mean(combined_weight * continuity_residual**2)
     # momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
-    continuity_loss = lambda_c * torch.mean(continuity_residual**2)
-    momentum_loss = lambda_m  * torch.mean(combined_weight * wet_mask * momentum_residual**2)
+    continuity_loss = torch.mean(combined_weight * continuity_residual**2)
+    momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
     dam_region_mask = torch.abs(x - dam_position) < 0.1
@@ -205,9 +205,15 @@ def improved_physics_loss(h, u, x, t):
     dry_h_loss = torch.mean(dry_mask * h**2)
     dry_u_loss = torch.mean(dry_mask * u**2)
 
+    # Dynamic weighting
+    total_pde_grad = continuity_loss.item() + momentum_loss.item()
+    if total_pde_grad > 0:
+        lambda_c = momentum_loss.item() / total_pde_grad
+        lambda_m = continuity_loss.item() / total_pde_grad
+
     # Combine total PDE loss
-    total_pde_loss = continuity_loss 
-    + momentum_loss 
+    total_pde_loss = lambda_c * continuity_loss 
+    + lambda_m * momentum_loss 
     + 1.0 * (dry_h_loss + dry_u_loss) 
     + 1.0 * dry_momentum_penalty 
     + 1.0 * dam_region_momentum_loss
@@ -221,7 +227,7 @@ def improved_physics_loss(h, u, x, t):
 
 # ------------------ Bed Elevation Function ------------------
 def zb(x):
-    return 0.4 * torch.exp(-((x - 10.0) ** 2) / 1.0)  # Smooth Gaussian bump. Bump to be centered at x = 10.0 with height of 0.2
+    return 0.5 * torch.exp(-((x - 10.0) ** 2) / 5.0)  # Smooth Gaussian bump. Bump to be centered at x = 10.0 with height of 0.2
 
 # ------------------ Initial Conditions ------------------
 def eta0(x):
@@ -411,6 +417,11 @@ loss_history = []
 
 model.train()
 
+# Loss weights
+lambda_c = 1.0
+lambda_m = 10.0
+
+# Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
     
