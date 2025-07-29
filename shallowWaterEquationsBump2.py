@@ -174,54 +174,54 @@ def improved_physics_loss(h, u, x, t):
     #wet_threshold = 0.02 #1e-1 # change these
     # Sigmoid is not giving good results. 
     #wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
-    # wet_mask = (h > 0.01).float() #0
-    # dry_mask = 1.0 - wet_mask
-    # dry_momentum_penalty = torch.mean(dry_mask * (h * u)**2)
+    wet_mask = (h > 1e-6).float() #0
+    dry_mask = 1.0 - wet_mask
+    dry_momentum_penalty = torch.mean(dry_mask * (h * u)**2)
 
     # Discontinuity detector: total gradient magnitude
-    # grad_strength = torch.abs(h_x) + torch.abs(u_x)
+    grad_strength = torch.abs(h_x) + torch.abs(u_x)
 
     # Gradient-based weighting: reduce loss impact where solution is steep
-    # weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
+    weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
-    # c0 = np.sqrt(g * h_left)
-    # dam_front_mask = (x > dam_position) & (x < dam_position + 2 * c0 * t)
-    # front_loss_weight = torch.exp(-grad_strength * dam_front_mask.float())
-    # combined_weight = front_loss_weight * weight_map
+    c0 = np.sqrt(g * h_left)
+    dam_front_mask = (x > dam_position) & (x < dam_position + 2 * c0 * t)
+    front_loss_weight = torch.exp(-grad_strength * dam_front_mask.float())
+    combined_weight = front_loss_weight * weight_map
 
     # Weighted PDE residuals
     # continuity_loss = torch.mean(combined_weight * continuity_residual**2)
     # momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
     continuity_loss = lambda_c * torch.mean(continuity_residual**2)
-    momentum_loss = lambda_m  * torch.mean(momentum_residual**2)
+    momentum_loss = lambda_m  * torch.mean(combined_weight * wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
-    #dam_region_mask = torch.abs(x - dam_position) < 0.1
-    #dam_loss_continuity_residual = torch.mean(weight_map * dam_region_mask.float() * (continuity_residual)**2)
-    #dam_region_momentum_loss = torch.mean(dam_region_mask.float() * (momentum_residual)**2)
+    dam_region_mask = torch.abs(x - dam_position) < 0.1
+    dam_loss_continuity_residual = torch.mean(weight_map * dam_region_mask.float() * (continuity_residual)**2)
+    dam_region_momentum_loss = torch.mean(dam_region_mask.float() * (momentum_residual)**2)
 
     
     # Penalize dry regions gently
-    # dry_h_loss = torch.mean(dry_mask * h**2)
-    # dry_u_loss = torch.mean(dry_mask * u**2)
+    dry_h_loss = torch.mean(dry_mask * h**2)
+    dry_u_loss = torch.mean(dry_mask * u**2)
 
     # Combine total PDE loss
     total_pde_loss = continuity_loss 
     + momentum_loss 
-    #+ 1.0 * (dry_h_loss + dry_u_loss) 
-    #+ 1.0 * dry_momentum_penalty 
-    #+ 1.0 * dam_region_momentum_loss
+    + 1.0 * (dry_h_loss + dry_u_loss) 
+    + 1.0 * dry_momentum_penalty 
+    + 1.0 * dam_region_momentum_loss
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
-        'momentum': momentum_loss.item()
-        #'dry_h': dry_h_loss.item(),
-        #'dry_u': dry_u_loss.item()
+        'momentum': momentum_loss.item(),
+        'dry_h': dry_h_loss.item(),
+        'dry_u': dry_u_loss.item()
     }
 
 # ------------------ Bed Elevation Function ------------------
 def zb(x):
-    return 0.2 * torch.exp(-((x - 10.0) ** 2) / 1.0)  # Smooth Gaussian bump. Bump to be centered at x = 10.0 with height of 0.2
+    return 0.4 * torch.exp(-((x - 10.0) ** 2) / 1.0)  # Smooth Gaussian bump. Bump to be centered at x = 10.0 with height of 0.2
 
 # ------------------ Initial Conditions ------------------
 def eta0(x):
