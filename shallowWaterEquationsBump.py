@@ -27,6 +27,9 @@ if test_case == 6:
 elif test_case == 7:
     eta = 2.0
     q = 4.42
+bump_height  = 0.1
+bump_center = 30.0
+bump_width = 6.0
 # Loss function weights - Better balanced
 lambda_ic = 10.0 # Reduced emphasis slightly
 lambda_pde = 1000.0 # Increased emphasis
@@ -200,7 +203,7 @@ def improved_physics_loss(h, u, x, t):
 
     hu = h * u
     hu_x = torch.autograd.grad(hu, x, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
-    h, u = model(x,t)
+    #h, u = model(x,t)
 
     # Continuity residual: ∂h/∂t + ∂(hu)/∂x = 0
     continuity_residual = h_t + hu_x
@@ -266,7 +269,6 @@ def initial_condition_loss(h_pred, u_pred, x_initial):
     """
     Improved initial condition loss
     """
-    # True initial conditions
     # Original condition
     # h_true = torch.where(x_initial < dam_position, 
     #                     torch.tensor(h_left, dtype=h_pred.dtype, device=h_pred.device), 
@@ -288,14 +290,9 @@ def initial_condition_loss(h_pred, u_pred, x_initial):
     # Standard L2 loss
     loss_h = torch.mean((h_pred - h_true)**2)
     loss_u = torch.mean((u_pred - u_true)**2)
-    
-    # Extra focus on dam break region. Not using for now
-    # dam_region_mask = torch.abs(x_initial - dam_position) < 0.3
-    # dam_loss_h = torch.mean(dam_region_mask.float() * (h_pred - h_true)**2)
-    # dam_loss_u = torch.mean(dam_region_mask.float() * (u_pred - u_true)**2)
 
-    return loss_h + loss_u 
-#def initial_condition_loss(h_pred, u_pred, x):
+    return loss_h + 10.0 * loss_u 
+    #def initial_condition_loss(h_pred, u_pred, x):
     #zb = zb_tensor(x)
     #h_true = eta - zb # free surface elevation minus bump
     #u_true = q / (h_true + 1e-6)
@@ -398,14 +395,11 @@ def bump_profile(x_array):
     zb = 0.4 * torch.exp(-((x_array - 30)**2) / (2 * sigma**2))
     bump = 0.4 - 0.1 * (x_array - 30.0)**2
     for i, xi in enumerate(x_array):
-        if 28.0 < xi < 32.0:
+        if bump_center - bump_width / 2 < xi < bump_center + bump_width / 2:
             zb[i] = bump[i]
     return zb
 
 def zb_tensor_for_plotting(x_tensor):
-    bump_height  = 0.1
-    bump_center = 30.0
-    bump_width = 3.0
     x_np = x_tensor.detach().cpu().numpy().flatten()
     zb_np = np.where(
         (x_np > bump_center - bump_width / 2) & (x_np < bump_center + bump_width / 2),
@@ -415,17 +409,18 @@ def zb_tensor_for_plotting(x_tensor):
     return zb_np
 
 def zb_tensor(x):
-    
-    # Differentiable parabolic bump centered at x=30, defined using Pytorch
-    bump_height  = 0.25
-    bump_center = 30.0
-    bump_width = 6.0 # Between roughly 28 and 32
+    k = bump_height / 9.0
+    zb = torch.zeros_like(x)
+    bump_region = (x > bump_center - bump_width / 2) & (x < bump_center + bump_width / 2)
+    zb[bump_region] = bump_height - k * (x[bump_region] - bump_center)**2
+    return zb
 
-    return torch.where(
-        (x > bump_center - bump_width / 2) & (x < bump_center + bump_width / 2),
-        bump_height - 0.1 * (x - bump_center)**2,
-        torch.zeros_like(x)
-    )
+
+    #return torch.where(
+        #(x > bump_center - bump_width / 2) & (x < bump_center + bump_width / 2),
+        #bump_height - 0.1 * (x - bump_center)**2,
+        #torch.zeros_like(x)
+    #)
 
 def ritter_supervision_loss(model, x_supervise, t_supervise):
     '''
@@ -491,7 +486,7 @@ print("Starting improved training for 1D Shallow Water Equations...")
 # === PHASE 0: IC Pretraining ===
 print("\nPretraining only on Initial Conditions for 1200 epochs...\n")
 
-for pre_epoch in range(1200):
+for pre_epoch in range(2000):
     optimizer.zero_grad()
 
     h_initial_pred, u_initial_pred = model(x_initial, t_initial)
@@ -501,7 +496,7 @@ for pre_epoch in range(1200):
     optimizer.step()
 
     if (pre_epoch + 1) % 20 == 0:
-        print(f"Pretraining Epoch {pre_epoch+1}/1200 - IC Loss: {loss_ic.item():.4e}")
+        print(f"Pretraining Epoch {pre_epoch+1}/2000 - IC Loss: {loss_ic.item():.4e}")
 
 # Reset LR scheduler (optional but recommended)
 scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
@@ -644,7 +639,7 @@ for i, t_val in enumerate(time_steps):
     
     # Water height
     ax1.plot(x_np, h_pred_plot, 'b-', label='PINN h(x,t)', linewidth=2)
-    ax1.plot(x_np, eta_plot, 'b-', label='Free surface η = h + zb', linewidth=2)
+    ax1.plot(x_np, eta_plot, 'g-', label='Free surface η = h + zb', linewidth=2)
     ax1.plot(x_np, zb_plot, 'y--', label='Bottom topography zb(x)', linewidth=1.5)
     ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
