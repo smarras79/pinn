@@ -28,7 +28,7 @@ learning_rate = 1e-3
 num_time_steps = 20
 
 #Scheduler tuning parameters
-scheduler_step_size_frequency = 4 #Number of times we want scheduler to reduce LR during full training with epochs
+scheduler_step_size_frequency = 2 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 
@@ -149,13 +149,14 @@ def improved_physics_loss(h, u, x, t):
     pressure = 0.5 * g * h**2
 
     # Compute derivatives
-    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     h_t = torch.autograd.grad(h, t, grad_outputs=torch.ones_like(h), create_graph=True)[0]
-    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    dhu_dt = torch.autograd.grad(hu, t, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
     hu_x = torch.autograd.grad(hu, x, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
+    dhu_dt = torch.autograd.grad(hu, t, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
     dflux_dx = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+
+    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    #u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
 
 
     # Continuity residual: ∂h/∂t + ∂(hu)/∂x = 0
@@ -190,8 +191,10 @@ def improved_physics_loss(h, u, x, t):
     combined_weight = front_loss_weight * weight_map
 
     # Weighted PDE residuals
-    continuity_loss = torch.mean(combined_weight * continuity_residual**2)
-    momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
+    # continuity_loss = torch.mean(combined_weight * continuity_residual**2)
+    # momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
+    continuity_loss = torch.mean(continuity_residual**2)
+    momentum_loss = torch.mean(wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
     dam_region_mask = torch.abs(x - dam_position) < 0.1
@@ -212,7 +215,7 @@ def improved_physics_loss(h, u, x, t):
     # Combine total PDE loss
     total_pde_loss = lambda_c * continuity_loss 
     + lambda_m * momentum_loss 
-    + 1.0 * (dry_h_loss + dry_u_loss) 
+    + 0.1 * (dry_h_loss + dry_u_loss) 
     + 1.0 * dry_momentum_penalty 
     + 1.0 * dam_region_momentum_loss
 
