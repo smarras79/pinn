@@ -28,18 +28,18 @@ learning_rate = 1e-3
 num_time_steps = 20
 
 #Scheduler tuning parameters
-scheduler_step_size_frequency = 4 #Number of times we want scheduler to reduce LR during full training with epochs
+scheduler_step_size_frequency = 2 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 
 # Initial condition parameters
 dam_position = 0.0
-h_left = 1.2 #0.33
-h_right = 0.0
+h_left = 1.2
+h_right = 0.7
 u_left = 0.0
-u_right = 0.0
+u_right = 0.5 #0.0
 
-num_frequencies=6
+#num_frequencies=6
 
 lambda_c = 1.0
 lambda_m = 10.0  # Increase if momentum is underfitting
@@ -50,7 +50,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 def get_weights(epoch, total_epochs):
     ic_weight = 100.0 #100
-    pde_weight = 10.0 #10
+    pde_weight = 50.0 #10
     bc_weight = 10.0
     return ic_weight, pde_weight, bc_weight
 
@@ -67,7 +67,7 @@ class ImprovedPINN_SWE(nn.Module):
     """
     def __init__(self):
         super(ImprovedPINN_SWE, self).__init__()
-        num_frequencies = 6
+        #num_frequencies = 6
         input_dim = 2
         
         # Shared backbone for feature extraction
@@ -149,13 +149,14 @@ def improved_physics_loss(h, u, x, t):
     pressure = 0.5 * g * h**2
 
     # Compute derivatives
-    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     h_t = torch.autograd.grad(h, t, grad_outputs=torch.ones_like(h), create_graph=True)[0]
-    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    dhu_dt = torch.autograd.grad(hu, t, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
     hu_x = torch.autograd.grad(hu, x, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
+    dhu_dt = torch.autograd.grad(hu, t, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
     dflux_dx = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+
+    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
+    #u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
 
 
     # Continuity residual: ∂h/∂t + ∂(hu)/∂x = 0
@@ -166,7 +167,7 @@ def improved_physics_loss(h, u, x, t):
     epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     zb_val = zb(x)
     dzb_dx = torch.autograd.grad(zb_val, x, grad_outputs=torch.ones_like(zb_val), create_graph=True)[0]
-    momentum_residual = dhu_dt + dflux_dx + g * h * dzb_dx / (h + epsilon)
+    momentum_residual = dhu_dt + dflux_dx + g * h * dzb_dx
     #momentum_residual = u_t + u * u_x + g * (h_x + dzb_dx)
     #momentum_residual = u_t + u * u_x + g * h_x   #Momentum residual without bump in bed slope
 
@@ -192,8 +193,8 @@ def improved_physics_loss(h, u, x, t):
     # Weighted PDE residuals
     # continuity_loss = torch.mean(combined_weight * continuity_residual**2)
     # momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
-    continuity_loss = torch.mean(combined_weight * continuity_residual**2)
-    momentum_loss = torch.mean(combined_weight * wet_mask * momentum_residual**2)
+    continuity_loss = torch.mean(continuity_residual**2)
+    momentum_loss = torch.mean(wet_mask * momentum_residual**2)
 
     # Extra focus on dam break region
     dam_region_mask = torch.abs(x - dam_position) < 0.1
@@ -214,7 +215,7 @@ def improved_physics_loss(h, u, x, t):
     # Combine total PDE loss
     total_pde_loss = lambda_c * continuity_loss 
     + lambda_m * momentum_loss 
-    + 1.0 * (dry_h_loss + dry_u_loss) 
+    + 0.1 * (dry_h_loss + dry_u_loss) 
     + 1.0 * dry_momentum_penalty 
     + 1.0 * dam_region_momentum_loss
 
@@ -227,17 +228,18 @@ def improved_physics_loss(h, u, x, t):
 
 # ------------------ Bed Elevation Function ------------------
 def zb(x):
-    return 0.5 * torch.exp(-((x - 10.0) ** 2) / 5.0)  # Smooth Gaussian bump. Bump to be centered at x = 10.0 with height of 0.2
+    return 0.5 * torch.exp(-((x - 5.0) ** 2) / 2.5)  # Smooth Gaussian bump. Bump to be centered at x = 5.0 with height of 0.5. half-width of 2.5
 
 # ------------------ Initial Conditions ------------------
 def eta0(x):
-    return torch.where(x < 0.0, torch.tensor(1.2), torch.tensor(0.7))  # Dam at x = 0.0
+    return torch.where(x < 0.0, torch.tensor(h_left), torch.tensor(h_right))  # Dam at x = 0.0
 
 def h0(x):
     return eta0(x) - zb(x)
 
 def u0(x):
-    return torch.zeros_like(x)
+    #return torch.zeros_like(x)
+    return torch.where(x < 0.0, torch.tensor(u_left), torch.tensor(u_right))  # Dam at x = 0.0
 
 def initial_condition_loss(h_pred, u_pred, x):
     #zb = zb_tensor(x)
@@ -252,19 +254,20 @@ def initial_condition_loss(h_pred, u_pred, x):
 
 # ------------------ Boundary Conditions ------------------
 def eta_left(t):
-    return torch.tensor(1.2).repeat(t.shape[0], 1)
+    return torch.tensor(h_left).repeat(t.shape[0], 1)
 
 def eta_right(t):
-    return torch.tensor(0.7).repeat(t.shape[0], 1)
+    return torch.tensor(h_right).repeat(t.shape[0], 1)
 
 def h_bc_left(t):
-    return eta_left(t) - zb(torch.tensor([[0.0]]))
+    return eta_left(t) - zb(torch.tensor([[x_min]]))
 
 def h_bc_right(t):
-    return eta_right(t) - zb(torch.tensor([[20.0]]))
+    return eta_right(t) - zb(torch.tensor([[x_max]]))
 
 def u_bc(t):
     return torch.tensor(0.0).repeat(t.shape[0], 1)
+    #return torch.where(t < 0.0, torch.tensor(u_left), torch.tensor(u_right))  # Dam at x = 0.0
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
@@ -390,8 +393,8 @@ x_boundary_left.requires_grad_(True)
 x_boundary_right.requires_grad_(True)
 
 #print("Starting improved training for 1D Shallow Water Equations...")
-# === PHASE 0: IC Pretraining ===
-#print("\nPretraining only on Initial Conditions for 1200 epochs...\n")
+#=== PHASE 0: IC Pretraining ===
+# print("\nPretraining only on Initial Conditions for 1200 epochs...\n")
 
 # for pre_epoch in range(1200):
 #     optimizer.zero_grad()
@@ -405,8 +408,8 @@ x_boundary_right.requires_grad_(True)
 #     if (pre_epoch + 1) % 20 == 0:
 #         print(f"Pretraining Epoch {pre_epoch+1}/1200 - IC Loss: {loss_ic.item():.4e}")
 
-# Reset LR scheduler (optional but recommended)
-#scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
+# #Reset LR scheduler (optional but recommended)
+# scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
 
 print(f"Domain: x ∈ [{x_min}, {x_max}], t ∈ [{t_min}, {t_max}]")
 print(f"Dam break at x = {dam_position}, h_left = {h_left}, h_right = {h_right}")
@@ -458,7 +461,7 @@ for epoch in range(epochs):
         #print(f"[Epoch {epoch+1}] h_mean: {h_train_mean:.4f}, h_std: {h_train_std:.4f}, h_max: {h_train_max:.4f}")
     
     # Gradient clipping
-    #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     
     optimizer.step()
     scheduler.step()
