@@ -1,0 +1,20 @@
+%% ====================================
+%%    Numerics-related settings
+%% ====================================
+%% Slope limiter, beta:
+1.000
+%% Courant number:
+0.800
+%% Zero depth threshold (m):
+0.001
+%% Slope limiter applied to (1)free surface or (2)water depth?
+1
+%% Boundary condition at West (5 char keyword):
+trinq
+%% Boundary condition at East (5 char keyword):
+trinh
+%% Less/More conservative criterion for min dt (1/2):
+1
+
+-------------------
+%% File created by swe_test_cases.py on 2025-08-27 11:47:04

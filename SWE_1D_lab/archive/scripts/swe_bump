@@ -1,0 +1,623 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from torch.optim import Adam
+import time
+
+# Set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+class PINN(nn.Module):
+    """Physics-Informed Neural Network for time-dependent 1D Shallow Water Equations"""
+    
+    def __init__(self, layers):
+        super(PINN, self).__init__()
+        self.layers = nn.ModuleList()
+        
+        # Build network layers
+        for i in range(len(layers) - 1):
+            self.layers.append(nn.Linear(layers[i], layers[i+1]))
+            
+        # Initialize weights using Xavier initialization
+        for layer in self.layers:
+            nn.init.xavier_normal_(layer.weight, gain=0.5)
+            nn.init.zeros_(layer.bias)
+    
+    def forward(self, xt):
+        # Input normalization
+        x = xt[:, 0:1]  # spatial coordinate
+        t = xt[:, 1:2]  # time coordinate
+        
+        # Normalize inputs to [-1, 1]
+        x_norm = (x - 12.5) / 12.5  # Domain is [0, 25]
+        t_norm = (t - 5.0) / 5.0     # Time domain is [0, 10]
+        
+        xt_norm = torch.cat([x_norm, t_norm], dim=1)
+        
+        for i, layer in enumerate(self.layers[:-1]):
+            xt_norm = torch.tanh(layer(xt_norm))
+        xt_norm = self.layers[-1](xt_norm)  # Linear output layer
+        return xt_norm
+
+class TimeDependentSWE_PINN:
+    """Time-dependent Shallow Water Equations PINN Solver"""
+    
+    def __init__(self, case_number=6):
+        self.case = case_number
+        self.g = 9.81  # gravitational acceleration
+        self.setup_problem()
+        
+        # Network architecture: [input_dim, hidden_layers, output_dim]
+        # Input: [x, t], Output: [h, q] (water depth, discharge)
+        layers = [2, 128, 128, 128, 64, 64, 2]
+        self.net = PINN(layers).to(device)
+        
+        # Initialize network
+        self.initialize_network()
+        
+        # Optimizer with learning rate scheduling
+        self.optimizer = Adam(self.net.parameters(), lr=1e-3, weight_decay=1e-6)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode='min', factor=0.8, patience=1000, verbose=True, min_lr=1e-7
+        )
+        
+        # Loss history
+        self.loss_history = []
+        self.physics_loss_history = []
+        self.ic_loss_history = []
+        self.bc_loss_history = []
+        
+        # Loss weights
+        self.w_physics = 1.0
+        self.w_ic = 100.0
+        self.w_bc = 50.0
+    
+    def setup_problem(self):
+        """Setup problem parameters based on case number"""
+        self.l = 25.0  # domain length
+        self.t_final = 10.0  # final time (10 seconds)
+        self.n_x = 128  # spatial points
+        self.n_t = 64   # time points
+        
+        # Create spatial and temporal domains
+        self.x_np = np.linspace(0, self.l, self.n_x)
+        self.t_np = np.linspace(0, self.t_final, self.n_t)
+        
+        # Create meshgrid for training points
+        X, T = np.meshgrid(self.x_np, self.t_np)
+        self.xt_domain = torch.tensor(
+            np.column_stack([X.flatten(), T.flatten()]), 
+            dtype=torch.float32, requires_grad=True
+        ).to(device)
+        
+        # Initial condition points (t = 0)
+        self.xt_ic = torch.tensor(
+            np.column_stack([self.x_np, np.zeros_like(self.x_np)]),
+            dtype=torch.float32, requires_grad=True
+        ).to(device)
+        
+        # Boundary condition points
+        t_bc = np.linspace(0, self.t_final, self.n_t)
+        # Left boundary (x = 0)
+        self.xt_bc_left = torch.tensor(
+            np.column_stack([np.zeros_like(t_bc), t_bc]),
+            dtype=torch.float32, requires_grad=True
+        ).to(device)
+        # Right boundary (x = L)
+        self.xt_bc_right = torch.tensor(
+            np.column_stack([np.ones_like(t_bc) * self.l, t_bc]),
+            dtype=torch.float32, requires_grad=True
+        ).to(device)
+        
+        # Case-specific parameters from the original code
+        if self.case == 6:  # Supercritical flow over a hump
+            # From original case 6
+            self.eta_val = 0.33  # water surface elevation
+            self.q_val = 0.18    # discharge per unit width
+            self.h_init = self.eta_val  # initial water depth (assuming zb=0 initially)
+            self.q_init = self.q_val    # initial discharge
+            self.flow_type = "Supercritical"
+            
+        elif self.case == 7:  # Subcritical flow over a hump
+            # From original case 7
+            self.eta_val = 2.0   # water surface elevation
+            self.q_val = 4.42    # discharge per unit width
+            self.h_init = self.eta_val  # initial water depth (assuming zb=0 initially)
+            self.q_init = self.q_val    # initial discharge
+            self.flow_type = "Subcritical"
+        
+        print(f"Setup complete for Case {self.case}: {self.flow_type} flow")
+        print(f"Initial conditions: eta = {self.eta_val}, q = {self.q_val}")
+        print(f"Domain: x ∈ [0, {self.l}], t ∈ [0, {self.t_final}]")
+    
+    def initialize_network(self):
+        """Initialize network with physically reasonable values"""
+        with torch.no_grad():
+            # Initialize output layer bias to initial conditions
+            self.net.layers[-1].bias.data[0] = self.h_init  # depth
+            self.net.layers[-1].bias.data[1] = self.q_init  # discharge
+    
+    def bed_elevation(self, x):
+        """Compute bed elevation at given x coordinates"""
+        zb = torch.zeros_like(x)
+        zb_h = 0.2 - 0.05 * (x - 10.0)**2
+        
+        # Apply conditions
+        mask1 = x <= 8.0
+        mask2 = (x > 8.0) & (x < 12.0)
+        mask3 = x >= 12.0
+        
+        zb[mask1] = 0.0
+        zb[mask2] = zb_h[mask2]
+        zb[mask3] = 0.0
+        
+        return zb
+    
+    def bed_slope(self, x):
+        """Compute bed slope (negative gradient of bed elevation)"""
+        zb = self.bed_elevation(x)
+        dzb_dx = torch.autograd.grad(
+            outputs=zb, inputs=x,
+            grad_outputs=torch.ones_like(zb),
+            create_graph=True, retain_graph=True
+        )[0]
+        return -dzb_dx  # S0 = -dzb/dx
+    
+    def physics_loss(self, xt):
+        """Compute physics-based loss from time-dependent SWE residuals"""
+        # Ensure input tensor requires gradients
+        xt = xt.clone().requires_grad_(True)
+        x = xt[:, 0:1]
+        t = xt[:, 1:2]
+    
+        # Get network predictions
+        u = self.net(xt)
+        h = u[:, 0:1]    # water depth
+        q = u[:, 1:2]    # discharge per unit width
+    
+        # Prevent negative depths
+        h = torch.clamp(h, min=1e-4)
+    
+        # Compute velocity
+        u_vel = q / h  # velocity = discharge / depth
+    
+        # Compute partial derivatives with allow_unused=True
+        try:
+            h_t = torch.autograd.grad(
+                outputs=h, inputs=t,
+                grad_outputs=torch.ones_like(h),
+                create_graph=True, retain_graph=True,
+                allow_unused=True
+            )[0]
+        
+            if h_t is None:
+                h_t = torch.zeros_like(h)
+        
+            h_x = torch.autograd.grad(
+                outputs=h, inputs=x,
+                grad_outputs=torch.ones_like(h),
+                create_graph=True, retain_graph=True,
+                allow_unused=True
+            )[0]
+        
+            if h_x is None:
+                h_x = torch.zeros_like(h)
+        
+            q_t = torch.autograd.grad(
+                outputs=q, inputs=t,
+                grad_outputs=torch.ones_like(q),
+                create_graph=True, retain_graph=True,
+                allow_unused=True
+            )[0]
+        
+            if q_t is None:
+                q_t = torch.zeros_like(q)
+        
+            q_x = torch.autograd.grad(
+                outputs=q, inputs=x,
+                grad_outputs=torch.ones_like(q),
+                create_graph=True, retain_graph=True,
+                allow_unused=True
+            )[0]
+        
+            if q_x is None:
+                q_x = torch.zeros_like(q)
+            
+        except RuntimeError as e:
+            print(f"Gradient computation error: {e}")
+            # Return zero tensors as fallback
+            return torch.zeros_like(h), torch.zeros_like(q)
+    
+        # Get bed slope
+        x_bed = x.clone().requires_grad_(True)
+        S0 = self.bed_slope(x_bed)
+    
+        # Time-dependent Shallow Water Equations:
+        # Continuity: ∂h/∂t + ∂q/∂x = 0
+        continuity = h_t + q_x
+    
+            # Momentum: ∂q/∂t + ∂(q²/h)/∂x + gh∂h/∂x = ghS₀
+        q_squared_over_h = q**2 / h
+    
+        try:
+            momentum_flux_x = torch.autograd.grad(
+                outputs=q_squared_over_h, inputs=x,
+                grad_outputs=torch.ones_like(q_squared_over_h),
+                create_graph=True, retain_graph=True,
+                allow_unused=True
+            )[0]
+        
+            if momentum_flux_x is None:
+                momentum_flux_x = torch.zeros_like(q_squared_over_h)
+            
+        except RuntimeError:
+            momentum_flux_x = torch.zeros_like(q_squared_over_h)
+    
+        momentum = q_t + momentum_flux_x + self.g * h * h_x - self.g * h * S0
+    
+        return continuity, momentum
+
+    def bed_slope(self, x):
+        """Compute bed slope (negative gradient of bed elevation)"""
+        # Ensure x requires gradients
+        if not x.requires_grad:
+            x = x.clone().requires_grad_(True)
+    
+        zb = self.bed_elevation(x)
+    
+        try:
+            dzb_dx = torch.autograd.grad(
+                outputs=zb, inputs=x,
+                grad_outputs=torch.ones_like(zb),
+                create_graph=True, retain_graph=True,
+                allow_unused=True
+            )[0]
+        
+            if dzb_dx is None:
+                dzb_dx = torch.zeros_like(zb)
+            
+        except RuntimeError:
+            dzb_dx = torch.zeros_like(zb)
+    
+        return -dzb_dx  # S0 = -dzb/dx
+    
+    def initial_condition_loss(self, xt):
+        """Compute initial condition loss"""
+        u = self.net(xt)
+        h_pred = u[:, 0:1]
+        q_pred = u[:, 1:2]
+        
+        # Initial conditions: uniform flow with specified eta and q values
+        h_ic_loss = torch.mean((h_pred - self.h_init)**2)
+        q_ic_loss = torch.mean((q_pred - self.q_init)**2)
+        
+        return h_ic_loss + q_ic_loss
+    
+    def boundary_condition_loss(self):
+        """Compute boundary condition loss"""
+        # For supercritical flow, specify upstream (left) boundary
+        # For subcritical flow, specify downstream (right) boundary
+        
+        if self.case == 6:  # Supercritical
+            u_left = self.net(self.xt_bc_left)
+            h_left = u_left[:, 0:1]
+            q_left = u_left[:, 1:2]
+            
+            bc_loss = torch.mean((h_left - self.h_init)**2) + torch.mean((q_left - self.q_init)**2)
+        else:  # Subcritical
+            u_right = self.net(self.xt_bc_right)
+            h_right = u_right[:, 0:1]
+            q_right = u_right[:, 1:2]
+            
+            bc_loss = torch.mean((h_right - self.h_init)**2) + torch.mean((q_right - self.q_init)**2)
+        
+        return bc_loss
+    
+    def compute_loss(self):
+        """Compute total loss"""
+        # Physics loss
+        continuity, momentum = self.physics_loss(self.xt_domain)
+        physics_loss = torch.mean(continuity**2) + torch.mean(momentum**2)
+        
+        # Initial condition loss
+        ic_loss = self.initial_condition_loss(self.xt_ic)
+        
+        # Boundary condition loss
+        bc_loss = self.boundary_condition_loss()
+        
+        # Adaptive weighting
+        if len(self.loss_history) > 100:
+            physics_mag = physics_loss.item()
+            ic_mag = ic_loss.item()
+            bc_mag = bc_loss.item()
+            
+            # Balance the losses
+            if physics_mag > 10 * ic_mag and ic_mag > 1e-8:
+                self.w_ic = min(1000.0, self.w_ic * 1.02)
+            if physics_mag > 10 * bc_mag and bc_mag > 1e-8:
+                self.w_bc = min(500.0, self.w_bc * 1.02)
+        
+        # Total loss
+        total_loss = self.w_physics * physics_loss + self.w_ic * ic_loss + self.w_bc * bc_loss
+        
+        return total_loss, physics_loss, ic_loss, bc_loss
+    
+    def train(self, epochs=10000, print_every=500):
+        """Train the time-dependent PINN"""
+        print(f"Training time-dependent PINN for {self.flow_type} flow over hump...")
+        print(f"Epochs: {epochs}")
+        
+        start_time = time.time()
+        best_loss = float('inf')
+        patience_counter = 0
+        
+        for epoch in range(epochs):
+            self.optimizer.zero_grad()
+            
+            loss, physics_loss, ic_loss, bc_loss = self.compute_loss()
+            loss.backward()
+            
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=1.0)
+            
+            self.optimizer.step()
+            self.scheduler.step(loss)
+            
+            # Store loss history
+            self.loss_history.append(loss.item())
+            self.physics_loss_history.append(physics_loss.item())
+            self.ic_loss_history.append(ic_loss.item())
+            self.bc_loss_history.append(bc_loss.item())
+            
+            # Early stopping check
+            if loss.item() < best_loss * 0.999:
+                best_loss = loss.item()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            
+            if epoch % print_every == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                print(f'Epoch {epoch:6d}: Loss = {loss.item():.6e}, '
+                      f'Physics = {physics_loss.item():.6e}, '
+                      f'IC = {ic_loss.item():.6e}, '
+                      f'BC = {bc_loss.item():.6e}, '
+                      f'LR = {current_lr:.2e}')
+            
+            # Early stopping
+            if patience_counter > 3000 and epoch > 2000:
+                print(f"Early stopping at epoch {epoch} due to loss plateau")
+                break
+        
+        training_time = time.time() - start_time
+        print(f'Training completed in {training_time:.2f} seconds')
+        print(f'Final loss: {best_loss:.6e}')
+    
+    def predict_at_time(self, t_eval):
+        """Make predictions at a specific time"""
+        x_test = np.linspace(0, self.l, 256)
+        t_test = np.ones_like(x_test) * t_eval
+        xt_test = torch.tensor(
+            np.column_stack([x_test, t_test]), 
+            dtype=torch.float32
+        ).to(device)
+        
+        self.net.eval()
+        with torch.no_grad():
+            u_pred = self.net(xt_test)
+            h_pred = u_pred[:, 0:1]
+            q_pred = u_pred[:, 1:2]
+            
+            # Compute derived quantities
+            h_pred = torch.clamp(h_pred, min=1e-6)
+            u_vel_pred = q_pred / h_pred
+            
+            # Compute water surface elevation
+            zb_pred = self.bed_elevation(xt_test[:, 0:1])
+            eta_pred = h_pred + zb_pred
+            
+            # Compute Froude number
+            Fr_pred = u_vel_pred / torch.sqrt(self.g * h_pred)
+        
+        return {
+            'x': x_test,
+            'h': h_pred.cpu().numpy().flatten(),
+            'q': q_pred.cpu().numpy().flatten(),
+            'u': u_vel_pred.cpu().numpy().flatten(),
+            'eta': eta_pred.cpu().numpy().flatten(),
+            'zb': zb_pred.cpu().numpy().flatten(),
+            'Fr': Fr_pred.cpu().numpy().flatten()
+        }
+    
+    def plot_time_evolution(self, time_snapshots=None):
+        """Plot water surface evolution at multiple time snapshots"""
+        if time_snapshots is None:
+            # Show evolution over 10 seconds with multiple intervals
+            time_snapshots = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        
+        fig = plt.figure(figsize=(20, 15))
+        
+        # Colors for different times
+        colors = plt.cm.viridis(np.linspace(0, 1, len(time_snapshots)))
+        
+        # Main plot: Free surface evolution
+        plt.subplot(3, 3, 1)
+        for i, t in enumerate(time_snapshots):
+            results = self.predict_at_time(t)
+            plt.plot(results['x'], results['eta'], color=colors[i], linewidth=2, 
+                    label=f't = {t:.0f} s')
+        
+        # Plot bed elevation
+        results_bed = self.predict_at_time(0)
+        plt.fill_between(results_bed['x'], results_bed['zb'], alpha=0.3, color='brown', label='Bed')
+        
+        plt.xlabel('x (m)')
+        plt.ylabel('Water Surface Elevation η (m)')
+        plt.title(f'Case {self.case}: {self.flow_type} Flow - Free Surface Evolution')
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True, alpha=0.3)
+        
+        # Water depth evolution
+        plt.subplot(3, 3, 2)
+        for i, t in enumerate(time_snapshots):
+            results = self.predict_at_time(t)
+            plt.plot(results['x'], results['h'], color=colors[i], linewidth=2, 
+                    label=f't = {t:.0f} s')
+        plt.xlabel('x (m)')
+        plt.ylabel('Water Depth h (m)')
+        plt.title('Water Depth Evolution')
+        plt.grid(True, alpha=0.3)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        # Velocity evolution
+        plt.subplot(3, 3, 3)
+        for i, t in enumerate(time_snapshots):
+            results = self.predict_at_time(t)
+            plt.plot(results['x'], results['u'], color=colors[i], linewidth=2, 
+                    label=f't = {t:.0f} s')
+        plt.xlabel('x (m)')
+        plt.ylabel('Velocity u (m/s)')
+        plt.title('Velocity Evolution')
+        plt.grid(True, alpha=0.3)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        # Discharge evolution
+        plt.subplot(3, 3, 4)
+        for i, t in enumerate(time_snapshots):
+            results = self.predict_at_time(t)
+            plt.plot(results['x'], results['q'], color=colors[i], linewidth=2, 
+                    label=f't = {t:.0f} s')
+        plt.xlabel('x (m)')
+        plt.ylabel('Discharge q (m²/s)')
+        plt.title('Discharge Evolution')
+        plt.grid(True, alpha=0.3)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        # Froude number evolution
+        plt.subplot(3, 3, 5)
+        for i, t in enumerate(time_snapshots):
+            results = self.predict_at_time(t)
+            plt.plot(results['x'], results['Fr'], color=colors[i], linewidth=2, 
+                    label=f't = {t:.0f} s')
+        plt.axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='Critical (Fr=1)')
+        plt.xlabel('x (m)')
+        plt.ylabel('Froude Number')
+        plt.title('Froude Number Evolution')
+        plt.grid(True, alpha=0.3)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        
+        # Water surface and bed profile at final time
+        plt.subplot(3, 3, 6)
+        final_results = self.predict_at_time(self.t_final)
+        plt.plot(final_results['x'], final_results['eta'], 'b-', linewidth=2, label='Water Surface (η)')
+        plt.plot(final_results['x'], final_results['zb'], 'k-', linewidth=2, label='Bed (zb)')
+        plt.fill_between(final_results['x'], final_results['zb'], alpha=0.3, color='brown')
+        plt.xlabel('x (m)')
+        plt.ylabel('Elevation (m)')
+        plt.title(f'Final Profile at t = {self.t_final} s')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Training loss history
+        plt.subplot(3, 3, 7)
+        plt.semilogy(self.loss_history, 'b-', label='Total Loss', alpha=0.7)
+        if len(self.physics_loss_history) > 0:
+            plt.semilogy(self.physics_loss_history, 'r--', label='Physics', alpha=0.7)
+            plt.semilogy(self.ic_loss_history, 'g--', label='IC', alpha=0.7)
+            plt.semilogy(self.bc_loss_history, 'm--', label='BC', alpha=0.7)
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Loss History')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Flow statistics over time
+        plt.subplot(3, 3, 8)
+        Fr_max_over_time = []
+        Fr_min_over_time = []
+        for t in time_snapshots:
+            results = self.predict_at_time(t)
+            Fr_max_over_time.append(np.max(results['Fr']))
+            Fr_min_over_time.append(np.min(results['Fr']))
+        
+        plt.plot(time_snapshots, Fr_max_over_time, 'r-', linewidth=2, label='Max Fr')
+        plt.plot(time_snapshots, Fr_min_over_time, 'b-', linewidth=2, label='Min Fr')
+        plt.axhline(y=1.0, color='k', linestyle='--', alpha=0.5, label='Critical (Fr=1)')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Froude Number')
+        plt.title('Froude Number Range Over Time')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Energy conservation check
+        plt.subplot(3, 3, 9)
+        energy_over_time = []
+        for t in time_snapshots:
+            results = self.predict_at_time(t)
+            # Specific energy: E = h + u²/(2g)
+            energy = results['h'] + (results['u']**2) / (2 * self.g)
+            energy_over_time.append(np.mean(energy))
+        
+        plt.plot(time_snapshots, energy_over_time, 'g-', linewidth=2, marker='o')
+        plt.xlabel('Time (s)')
+        plt.ylabel('Mean Specific Energy (m)')
+        plt.title('Energy Conservation Over Time')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Print detailed flow statistics
+        final_results = self.predict_at_time(self.t_final)
+        Fr_mean = np.mean(final_results['Fr'])
+        Fr_max = np.max(final_results['Fr'])
+        Fr_min = np.min(final_results['Fr'])
+        
+        print(f"\n{'='*50}")
+        print(f"CASE {self.case}: {self.flow_type.upper()} FLOW RESULTS")
+        print(f"{'='*50}")
+        print(f"Initial Conditions:")
+        print(f"  - Water surface elevation (η): {self.eta_val:.3f} m")
+        print(f"  - Discharge per unit width (q): {self.q_val:.3f} m²/s")
+        print(f"\nFinal Flow Statistics (t = {self.t_final} s):")
+        print(f"  - Mean Froude Number: {Fr_mean:.3f}")
+        print(f"  - Froude Number Range: [{Fr_min:.3f}, {Fr_max:.3f}]")
+        print(f"  - Flow Classification: {'Supercritical' if Fr_mean > 1 else 'Subcritical'}")
+        print(f"  - Max water elevation: {np.max(final_results['eta']):.3f} m")
+        print(f"  - Min water elevation: {np.min(final_results['eta']):.3f} m")
+        print(f"  - Max velocity: {np.max(final_results['u']):.3f} m/s")
+        print(f"  - Min velocity: {np.min(final_results['u']):.3f} m/s")
+
+# Example usage
+def run_time_dependent_case(case_number):
+    """Run time-dependent PINN simulation for specified case"""
+    print(f"\n{'='*70}")
+    print(f"Running Time-Dependent Case {case_number}")
+    print(f"{'='*70}")
+    
+    # Create and train PINN
+    pinn = TimeDependentSWE_PINN(case_number=case_number)
+    pinn.train(epochs=8000, print_every=500)
+    
+    # Plot time evolution
+    pinn.plot_time_evolution()
+    
+    return pinn
+
+# Run both cases separately
+if __name__ == "__main__":
+    # Case 6: Supercritical flow with time evolution (0-10 seconds)
+    print("Starting Case 6: Supercritical Flow Evolution")
+    pinn6 = run_time_dependent_case(6)
+    
+    # Case 7: Subcritical flow with time evolution (0-10 seconds)  
+    print("\n" + "="*70)
+    print("Starting Case 7: Subcritical Flow Evolution")
+    pinn7 = run_time_dependent_case(7)
+
+# Run the case
+if __name__ == "__main__":
+    # Case 6: Supercritical flow with time evolution
+    pinn6 = run_time_dependent_case(6)

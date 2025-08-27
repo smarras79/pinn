@@ -1,0 +1,604 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
+import os
+import subprocess
+
+def printfile(header, footer, filename, fmt, data, directory):
+    """
+    Writes data to a file with a header and footer.
+    """
+    os.makedirs(directory, exist_ok=True)
+    filepath = os.path.join(directory, filename)
+    with open(filepath, 'w') as fid:
+        fid.write(header)
+        # Transpose data for column-wise writing if it's a 2D array
+        if isinstance(data, np.ndarray) and data.ndim > 1:
+            np.savetxt(fid, data.T, fmt=fmt, comments='')
+        else:
+            # Handle 1D arrays or single values by ensuring they are written on a single line if fmt expects multiple values
+            # This part might need adjustment depending on how 'fmt' is used for 1D arrays.
+            # For this specific MATLAB code, Wr is 4 rows by n columns, so it transposes well.
+            # If a single variable like 'q' was passed, it would need to be handled differently.
+            np.savetxt(fid, data.reshape(1, -1), fmt=fmt, comments='') # Reshape for savetxt to treat as a single row if 1D
+        fid.write(footer)
+
+def swe_test_cases(testcase_id):
+    """
+    Sets up initial conditions and simulation parameters for SWE1D FV code.
+    """
+    # ==========================================================================
+    # write files to (your working directory):
+    dire = './runs/'  # Current directory for runs
+    # Select case to be run: (taken from input argument)
+    # Options are:
+    #   0 = Dam break over horizontal wet bed
+    #   1 = A pond with still water
+    #   2 = Dam break over a slope (wet bed)
+    #   3 = Dam break over a slope (dry slope)
+    #   4 = Uniform flow (to test bed friction)
+    #   5 = Dam break over triangular hump (Brufau et al. 2002)
+    #   6 = Supercritical steady flow over a hump
+    #   7 = Subcritical steady flow over a hump
+    #   8 = A ramp to test time series (a tide)
+    #
+    # Run automatically the SWE solver?
+    runsolver = 1
+    # Update these paths to your actual solver location
+    path2solver = '../src/' # Assuming solver is in a 'src' folder one level up
+    solver = 'SWE1D_HLLC'  # add .exe for Windows if needed (handled in subprocess)
+    # ==========================================================================
+
+    # ----NOTES----------------------------------------------
+    # Options for boundary conditions are (5 char long)
+    #   refle = reflective walls
+    #   trlnq = transmissive (h fixed, q linearly extrapolated)
+    #   still = fixed h and zero q, for still water test
+    #   hump1 = h/q fixed downstream/upstream, for hump test
+    #   trinh = conserves Riemann invariant, fixed intial h
+    #   trinq = conserves Riemann invariant, fixed intial q
+    #   times = reads external time series
+    #
+    # Criteria for minimum dt:
+    #   1 = considers all domain wet; S = |u| + a
+    #   2 = dry front at some point; S = |u| + 2a
+    # -------------------------------------------------------
+
+    # Date and time:
+    tnow = datetime.now()
+    tnows = tnow.strftime('%Y-%m-%d %H:%M:%S')
+    thisfile = os.path.basename(__file__)
+
+    file_pref = 'Slope_test_'
+
+    # Initialize variables that are common or need default values
+    l, n, dx, x = None, None, None, None
+    zb, eta, q = None, None, None
+    tout, twrite, manning = None, None, None
+    beta_sl, cour, zeroh, sl_var, bc_w, bc_e, dt_c = None, None, None, None, None, None, None
+    fg_sensor, sens_loc, tw_local, n_sens = False, [], 0.0, 0
+
+    match testcase_id:
+        # ************************************
+        case 0:  # Dam break over horizontal wet bed
+            l = 50.0
+            eta_l = 1.0
+            eta_r = 0.2
+            x0 = 25.0  # position of dam
+            # number of cells:
+            n = 100
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb_f = np.zeros(n)
+            zb = zb_f
+
+            eta = np.where(x <= x0, eta_l, eta_r)
+            q = np.zeros(n) # Using np.zeros(n) for q to match eta and zb array structure
+
+            tout = 5.0
+            twrite = 0.2
+            manning = 0.0
+
+            # numerics:
+            beta_sl = 1.0  # slope limiter
+            cour = 0.8  # Courant number
+            zeroh = 1.0e-3  # water depth threshold
+            sl_var = 1  # slope limiter applied to (1)eta or (2)h
+            bc_w = 'refle'  # type of BC at West (see notes on top)
+            bc_e = 'refle'  # type of BC at East (see notes on top)
+            dt_c = 1  # criterion for min dt (see notes on top)
+
+            # activating local sensors:
+            fg_sensor = False
+            sens_loc = [5, 20, 35]
+            tw_local = 20.0
+
+        # ************************************
+        case 1:  # A pond with still water
+            l = 1000.0
+            n = 40
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+            x2 = l / 2.0
+            hs = 5.0 - 4.0 * ((x - x2) / x2)**2
+            eta = 6.0 * np.ones(n)
+            zb = eta - hs
+            q = 0.0 * np.ones(n)
+
+            tout = 1000.0
+            twrite = 50.0
+            manning = 0.0
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'still'
+            bc_e = 'still'
+            dt_c = 1
+
+            # activating local sensors:
+            fg_sensor = True
+            sens_loc = [20]
+            tw_local = 5.0
+
+        # ************************************
+        case 2:  # Dam break over a slope (wet bed)
+            l = 50.0
+            x_r = 30.0  # ramp starts at
+            l_r = l - x_r  # length of ramp
+            z_r = 0.1  # height of ramp
+            eta_l = 1.0
+            eta_r = 0.2
+            x0 = 25.0  # position of dam
+            # number of cells:
+            n = 100
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb_f = np.zeros(n)
+            zb_s = (z_r / l_r) * x - (z_r / l_r) * x_r
+            zb = np.where(x <= x_r, zb_f, zb_s)
+
+            eta = np.where(x <= x0, eta_l, eta_r)
+            q = np.zeros(n)
+
+            tout = 5.0
+            twrite = 0.2
+            manning = 0.0
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'refle'
+            bc_e = 'refle'
+            dt_c = 1
+
+            # activating local sensors:
+            fg_sensor = False
+            sens_loc = [5, 20, 35]
+            tw_local = 20.0
+
+        # ************************************
+        case 3:  # Dam break over a slope (dry slope)
+            l = 50.0
+            x_r = 30.0  # ramp starts at
+            l_r = l - x_r  # length of ramp
+            z_r = 0.1  # height of ramp
+            eta_l = 1.0
+            x0 = 25.0  # position of dam
+            # number of cells:
+            n = 100
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb_f = np.zeros(n)
+            zb_s = (z_r / l_r) * x - (z_r / l_r) * x_r
+            zb = np.where(x <= x_r, zb_f, zb_s)
+
+            eta_r = zb
+            eta = np.where(x <= x0, eta_l, eta_r)
+            q = np.zeros(n)
+
+            tout = 5.0
+            twrite = 0.2
+            manning = 0.0
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'refle'
+            bc_e = 'refle'
+            dt_c = 2
+
+            # activating local sensors:
+            fg_sensor = True
+            sens_loc = [80, 90]
+            tw_local = 0.5
+
+        # ************************************
+        case 4:  # Uniform flow (to test bed friction)
+            l = 1000.0  # length of channel
+            slope = 1.0 / 1000
+            datum = 1.0
+            # number of cells:
+            n = 40
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb = -slope * x + slope * l + datum
+
+            h = 5.0
+            q_val = 0.0 # Use a different name for scalar q
+            eta = zb + h
+            q = np.ones(n) * q_val # Make q an array
+
+            tout = 10000.0
+            twrite = 500.0
+            manning = 0.04
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 2
+            bc_w = 'trinh'
+            bc_e = 'trinh'
+            dt_c = 1
+
+            # activating local sensors:
+            fg_sensor = True
+            sens_loc = [5, 20, 35]
+            tw_local = 20.0
+
+        # ************************************
+        case 5:  # Dam break over triangular hump (Brufau et al. 2002)
+            l = 38.0
+            zs = 25.5  # hump starts at
+            zl = 6.0  # length of hump
+            zh = 0.4  # height of hump
+
+            hd = 0.75  # water depth in reservoir
+            xd = 15.5  # position of dam
+
+            # number of cells:
+            n = 380
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb = np.zeros(n)
+            zb_uh = (2.0 * zh / zl) * x - (2.0 * zh / zl) * zs
+            zb_dh = (-2.0 * zh / zl) * x + (2.0 * zh / zl) * (zs + zl)
+
+            x_ch = zs + zl / 2
+            x_eh = zs + zl
+
+            for i in range(n):
+                if x[i] <= zs:
+                    zb[i] = 0.0
+                elif zs < x[i] <= x_ch:
+                    zb[i] = zb_uh[i]
+                elif x_ch < x[i] < x_eh:
+                    zb[i] = zb_dh[i]
+                else:
+                    zb[i] = 0.0
+
+            eta_r = zb
+            eta_l = hd
+
+            eta = np.where(x <= xd, eta_l, eta_r)
+            q = np.zeros(n)
+
+            tout = 10.0
+            twrite = 0.2
+            manning = 0.0125
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'refle'
+            bc_e = 'refle'
+            dt_c = 2
+
+            # activating local sensors:
+            fg_sensor = False
+            sens_loc = [5, 20, 35]
+            tw_local = 20.0
+
+        # ************************************
+        case 6:  # Supercritical steady flow over a hump
+            l = 25.0
+            # number of cells:
+            n = 256
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb = np.zeros(n)
+            zb_h = 0.2 - 0.05 * (x - 10.0)**2
+
+            for i in range(n):
+                if x[i] <= 8.0:
+                    zb[i] = 0.0
+                elif 8.0 < x[i] < 12.0:
+                    zb[i] = zb_h[i]
+                else:
+                    zb[i] = 0.0
+
+            eta_val = 0.33 # Scalar value
+            q_val = 0.18   # Scalar value
+            eta = np.ones(n) * eta_val
+            q = np.ones(n) * q_val
+
+            tout = 500.0
+            twrite = 10.0
+            manning = 0.0
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'trinq'
+            bc_e = 'trinh'
+            dt_c = 1
+
+            # activating local sensors:
+            fg_sensor = False
+            sens_loc = [5, 20, 35]
+            tw_local = 20.0
+
+        # ************************************
+        case 7:  # Subcritical steady flow over a hump
+            l = 25.0
+            # number of cells:
+            n = 256
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb = np.zeros(n)
+            zb_h = 0.2 - 0.05 * (x - 10.0)**2
+
+            for i in range(n):
+                if x[i] <= 8.0:
+                    zb[i] = 0.0
+                elif 8.0 < x[i] < 12.0:
+                    zb[i] = zb_h[i]
+                else:
+                    zb[i] = 0.0
+
+            eta_val = 2.0
+            q_val = 4.42
+            eta = np.ones(n) * eta_val
+            q = np.ones(n) * q_val
+
+            tout = 500.0
+            twrite = 10.0
+            manning = 0.0
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'trinq'
+            bc_e = 'trinh'
+            dt_c = 1
+
+            # activating local sensors:
+            fg_sensor = False
+            sens_loc = [5, 20, 35]
+            tw_local = 20.0
+
+        # ************************************
+        case 8:  # A ramp to test time series (a tide)
+            l = 50.0
+            x_r = 30.0  # ramp starts at
+            l_r = l - x_r  # length of ramp
+            z_r = 1.0  # height of ramp
+            eta_l = 0.5
+            # x0 = 25.0  # position of dam (not used in this case)
+            # number of cells:
+            n = 100
+            dx = l / n
+            x = np.arange(dx / 2.0, l, dx)
+
+            zb_f = np.zeros(n)
+            zb_s = (z_r / l_r) * x - (z_r / l_r) * x_r
+            zb = np.where(x <= x_r, zb_f, zb_s)
+
+            eta_r = zb
+            eta = np.where(zb <= eta_l, eta_l, eta_r) # Corrected logic to match MATLAB
+
+            q = np.zeros(n)
+
+            tout = 7200.0
+            twrite = 100.0
+            manning = 0.02
+
+            # numerics:
+            beta_sl = 1.0
+            cour = 0.8
+            zeroh = 1.0e-3
+            sl_var = 1
+            bc_w = 'times'
+            bc_e = 'refle'
+            dt_c = 2
+
+            # activating local sensors:
+            fg_sensor = True
+            sens_loc = [5, 50]
+            tw_local = 10.0
+
+        case _:
+            raise ValueError('This test case is not an option.')
+
+    # Calculate n_sens after all case-specific assignments
+    n_sens = len(sens_loc) if fg_sensor else 0
+
+    filename = f'{file_pref}{testcase_id}.ic'
+
+    # Plotting:
+    plt.figure(figsize=(10, 6))
+    ax1 = plt.gca()
+
+    ax1.plot(x, zb, '-k', label='Bed Elevation ($z_b$)')
+    ax1.plot(x, eta, 'x', label='Free Surface ($\eta$)')
+    ax1.set_ylim(0, 1.25 * np.max(eta) if np.max(eta) > 0 else 0.1) # Ensure non-zero limit for plotting
+    ax1.set_ylabel('Elevation (m)')
+    ax1.legend(loc='upper left')
+
+    ax2 = ax1.twinx()
+    ax2.plot(x, q, '*', color='blue', label='Discharge ($q$)')
+    q_min_plot = min(-0.1, 1.25 * np.min(q)) if np.min(q) < 0 else 0
+    q_max_plot = max(0.1, 1.25 * np.max(q)) if np.max(q) > 0 else 0.1
+    ax2.set_ylim(q_min_plot, q_max_plot)
+    ax2.set_ylabel('Discharge ($m^2/s$)')
+    ax2.legend(loc='upper right')
+
+    plt.xlabel('Distance (m)')
+    plt.title(f'Test Case {testcase_id} Initial Conditions')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+    # Writing file
+    Wr = np.array([x, zb, eta, q])
+
+    header = '%% x(m)   z_b(m)   eta(m)   q(m^2/s)\n'
+    fmt = '%.6e %.6e %.6e %.6e' # Corrected format string for savetxt
+    footer = f'%% File created by {thisfile} on {tnows}\n'
+
+    # Calls function to print variables with initial conditions:
+    printfile(header, footer, filename, fmt, Wr, dire)
+    print(f"Initial conditions written to: {os.path.join(dire, filename)}")
+
+
+    # --- Prints file with simulation settings:
+    print('Writing file with simulation settings (settings_sim.inp)...')
+    h1 = '%% ====================================\n'
+    sign = f'\n-------------------\n%% File created by {thisfile} on {tnows}\n'
+
+    with open('settings_sim.inp', 'w') as fid:
+        fid.write(h1)
+        fid.write('%%   Main settings for the simulation\n')
+        fid.write(h1)
+        fid.write('%% Number of cells:\n')
+        fid.write(f'{n}\n')
+        fid.write('%% File with initial conditions:\n')
+        fid.write(f'{filename}\n')
+        fid.write('%% Total time of simulation (s):\n')
+        fid.write(f'{tout:.3g}\n')
+        fid.write('%% Print global variables every (s):\n')
+        fid.write(f'{twrite:.3f}\n')
+        fid.write('%% Mannings coefficient n:\n')
+        fid.write(f'{manning:.5f}\n')
+        fid.write('%% Amount of local recordings (sensors):\n')
+        fid.write(f'{n_sens}\n')
+        fid.write(sign)
+    print("settings_sim.inp created.")
+
+
+    # --- Prints file with numerical settings:
+    print('Writing file with numerics settings (settings_num.inp)...')
+    with open('settings_num.inp', 'w') as fid:
+        fid.write(h1)
+        fid.write('%%    Numerics-related settings\n')
+        fid.write(h1)
+        fid.write('%% Slope limiter, beta:\n')
+        fid.write(f'{beta_sl:.3f}\n')
+        fid.write('%% Courant number:\n')
+        fid.write(f'{cour:.3f}\n')
+        fid.write('%% Zero depth threshold (m):\n')
+        fid.write(f'{zeroh:.3g}\n')
+        fid.write('%% Slope limiter applied to (1)free surface or (2)water depth?\n')
+        fid.write(f'{sl_var}\n')
+        fid.write('%% Boundary condition at West (5 char keyword):\n')
+        fid.write(f'{bc_w}\n')
+        fid.write('%% Boundary condition at East (5 char keyword):\n')
+        fid.write(f'{bc_e}\n')
+        fid.write('%% Less/More conservative criterion for min dt (1/2):\n')
+        fid.write(f'{dt_c}\n')
+        fid.write(sign)
+    print("settings_num.inp created.")
+
+    # --- Prints file with sensors settings if present:
+    if fg_sensor:
+        print('Writing file with information on sensors (local_sensors.inp)...')
+        with open('local_sensors.inp', 'w') as fid:
+            fid.write(h1)
+            fid.write('%% Information on local sensors\n')
+            fid.write(h1)
+            fid.write('%% Number of sensors:\n')
+            fid.write(f'{n_sens}\n')
+            fid.write('%% Location (index) of sensors:\n')
+            # MATLAB's sens_loc is 1-indexed, Python's will be 0-indexed for array access.
+            # When writing to file, if the solver expects 1-indexed, convert back.
+            # Assuming the solver expects 1-indexed from MATLAB code, convert Python's 0-indexed sens_loc.
+            sens_loc_1_indexed = [loc + 1 for loc in sens_loc]
+            fid.write(' '.join(map(str, sens_loc_1_indexed)) + '\n')
+            fid.write('%% Output results every (s):\n')
+            fid.write(f'{tw_local:.3f}\n')
+            fid.write(sign)
+        print("local_sensors.inp created.")
+
+        # Plot sensors on the graph if they exist and fg_sensor is True
+        # Ensure sens_loc is correctly used as 0-indexed for Python arrays
+        if sens_loc: # Check if sens_loc is not empty
+            ax1.plot(x[np.array(sens_loc) -1], zb[np.array(sens_loc) -1], 'dk', markersize=8, markerfacecolor='k', label='Sensor Locations')
+            ax1.legend(loc='upper left')
+            plt.draw() # Redraw the figure to show new plots
+
+    print('Done.')
+    print('Output files located in:')
+    print(os.getcwd())
+    print(' ')
+
+    # Running the simulation from this code:
+    if runsolver:
+        print('Running executable...')
+        # Adjust command for your system. For Windows, change './' to '' and add '.exe' to solver
+        # For cross-platform compatibility, consider `sys.platform`
+        # command = f'cd {path2solver} && ./{solver}' # Unix/MacOS
+        # Use subprocess.run for better control and error handling
+        try:
+            # Change directory, then run the solver. shell=True for 'cd && command'
+            # For Windows, you might need: cmd /C "cd /d {path2solver} && {solver}.exe"
+            if os.name == 'nt':  # Windows
+                command_list = [os.path.join(path2solver, f'{solver}.exe')]
+            else: # Unix/MacOS
+                command_list = [os.path.join(path2solver, solver)]
+
+            # Use Popen to run in the background (like MATLAB's '&')
+            process = subprocess.Popen(command_list, cwd=path2solver,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            print(f"Solver process started with PID: {process.pid}")
+            print("Simulation started in the background. Check your working directory for results.")
+            # If you want to wait for it to finish and see output:
+            # stdout, stderr = process.communicate()
+            # print(stdout)
+            # print(stderr)
+            # if process.returncode != 0:
+            #     print(f"Solver exited with error code {process.returncode}")
+            # else:
+            #     print('Simulation ended, see results in working directory.')
+
+        except FileNotFoundError:
+            print(f"Error: Solver '{solver}' not found at '{path2solver}'. Please check the path and executable name.")
+        except Exception as e:
+            print(f"An error occurred while trying to run the solver: {e}")
+
+if __name__ == '__main__':
+    # Example usage: Run test case 4
+    try:
+        swe_test_cases(4)
+    except ValueError as e:
+        print(e)

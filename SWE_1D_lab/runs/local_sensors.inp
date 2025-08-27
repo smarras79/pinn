@@ -1,0 +1,12 @@
+%% ====================================
+%% Information on local sensors
+%% ====================================
+%% Number of sensors:
+1
+%% Location (index) of sensors:
+21
+%% Output results every (s):
+5.000
+
+-------------------
+%% File created by swe_test_cases.py on 2025-08-25 21:08:55

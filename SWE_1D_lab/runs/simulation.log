@@ -1,0 +1,47 @@
+ ************************************************************
+  
+          1D Shallow Water Equations Solver
+             (FV HLLC approx. solver)
+             	version XXX.XXX
+  
+ ************************************************************
+  
+ Simulation started: YYYYMMDD   hhmm
+                     20250827   1147
+  
+ Working directory:
+ C:\\Users\\rhear\\MPAS\\PINN\\SWE_1D_lab\\runs\\
+  
+ Parameters read from settings_sim.inp and settings_num.inp
+  
+ ~~~~~Input data:
+              Total time of simulation (s):   500.000E+00
+              File with initial conditions:  Slope_test_6.ic               
+                           Number of cells:    256
+          Global results printed every (s):    10.000E+00
+                                Mannings n:     0.000E+00
+         Number of local sensors recording:      0
+  
+ ~~~~~Advanced parameters:
+                       Slope limiter, beta:     1.000E+00
+                  Slope limiter applied to:  water surface level
+                            Courant number:   800.000E-03
+            Zero water depth threshold (m):     1.000E-03
+                Boundary condition at West:  conserv. Riemann invariant, prescr. q
+                Boundary condition at East:  conserv. Riemann invariant, prescr. h
+                Criterion for computing dt:  for wet domains
+  
+ Starting simulation... 
+  
+ 10.0% complete    average dt =   23.772E-03s
+ 20.0% complete    average dt =   23.179E-03s
+ 30.0% complete    average dt =   22.879E-03s
+ 40.0% complete    average dt =   22.714E-03s
+ 50.0% complete    average dt =   22.617E-03s
+ 60.0% complete    average dt =   22.552E-03s
+ 70.0% complete    average dt =   22.506E-03s
+ 80.0% complete    average dt =   22.472E-03s
+ 90.0% complete    average dt =   22.445E-03s
+  
+ Simulation finished.
+Total CPU time of simulation (s):     2.453E+00

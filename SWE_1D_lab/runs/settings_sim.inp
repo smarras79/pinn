@@ -1,0 +1,18 @@
+%% ====================================
+%%   Main settings for the simulation
+%% ====================================
+%% Number of cells:
+256
+%% File with initial conditions:
+Slope_test_6.ic
+%% Total time of simulation (s):
+500
+%% Print global variables every (s):
+10.000
+%% Mannings coefficient n:
+0.00000
+%% Amount of local recordings (sensors):
+0
+
+-------------------
+%% File created by swe_test_cases.py on 2025-08-27 11:47:04
