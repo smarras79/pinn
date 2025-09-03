@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import time
-from scipy.integrate import solve_ivp
 
 # Set the environment variable
 os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
@@ -16,7 +15,7 @@ g = 9.81        # Gravitational acceleration (m/s^2)
 
 # Domain parameters
 x_min, x_max = 0.0, 20.0    # Spatial domain [m]
-t_min, t_max = 0.0, 5.0     # Time domain [s]
+#t_min, t_max = 0.0, 5.0     # Time domain [s]
 L = x_max - x_min
 
 # Training parameters
@@ -33,14 +32,13 @@ scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 
 # Initial condition parameters
-eta_val = 2.0
-q_val = 4.42
+eta_val = 0.33
 
 lambda_c = 1.0
 lambda_m = 10.0  # Increase if momentum is underfitting
 
 # Output directory
-output_dir = "swe/temp/swe_solution_fixed_case7_" + str(epochs)
+output_dir = "swe/temp/swe_solution_oneInput_case6_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 def get_weights(epoch, total_epochs):
@@ -53,8 +51,8 @@ def get_weights(epoch, total_epochs):
 def normalize(x, xmin=0.0, xmax=20.0):
     return 2.0 * (x - xmin) / (xmax - xmin) - 1.0
 
-def normalize_t(t, tmin=0.0, tmax=1.0):
-    return 2.0 * (t - tmin) / (tmax - tmin) - 1.0
+# def normalize_t(t, tmin=0.0, tmax=1.0):
+#     return 2.0 * (t - tmin) / (tmax - tmin) - 1.0
 
 class ImprovedPINN_SWE(nn.Module):
     """
@@ -67,7 +65,7 @@ class ImprovedPINN_SWE(nn.Module):
         
         # Shared backbone for feature extraction
         self.backbone = nn.Sequential(
-            nn.Linear(2, 128),  # updated input size
+            nn.Linear(1, 128),  # updated input size
             nn.Tanh(),
             nn.Linear(128, 128),
             nn.Tanh(),
@@ -113,11 +111,11 @@ class ImprovedPINN_SWE(nn.Module):
             torch.nn.init.xavier_normal_(m.weight, gain=0.5)
             torch.nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, t):
+    def forward(self, x):
         # Normalize inputs: Neural networks train better with inputs in the range [-1, 1]
         x_norm = normalize(x)
-        t_norm = normalize_t(t)
-        inputs = torch.cat([x_norm, t_norm], dim=1)
+        #t_norm = normalize_t(t)
+        inputs = torch.cat([x_norm], dim=1)
         #inputs = torch.cat([x, t], dim=1)
         features = self.backbone(inputs)
 
@@ -134,35 +132,32 @@ model = ImprovedPINN_SWE()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
 
-def improved_physics_loss(h, u, x, t):
+def improved_physics_loss(h, u, x):
     """
     Physics-informed loss for 1D Shallow Water Equations with gradient-based weighting.
     Penalizes discontinuity regions less and focuses on smooth wave dynamics.
     """
-    hu = h * u
+    q = h * u
     hu2 = h * u**2
     pressure = 0.5 * g * h**2
 
     # Compute derivatives
-    h_t = torch.autograd.grad(h, t, grad_outputs=torch.ones_like(h), create_graph=True)[0]
-    hu_x = torch.autograd.grad(hu, x, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
-    dhu_dt = torch.autograd.grad(hu, t, grad_outputs=torch.ones_like(hu), create_graph=True)[0]
-    dflux_dx = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
-
+    hu_x = torch.autograd.grad(q, x, grad_outputs=torch.ones_like(q), create_graph=True)[0]
+    flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
+    zb = bed_elevation(x)
     h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     #u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
 
 
-    # Continuity residual: ∂h/∂t + ∂(hu)/∂x = 0
-    continuity_residual = h_t + hu_x
+    # Steady continuity residual: ∂(hu)/∂x = 0
+    continuity_residual = hu_x
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
     epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
-    zb_val = bed_elevation(x)
-    dzb_dx = torch.autograd.grad(zb_val, x, grad_outputs=torch.ones_like(zb_val), create_graph=True)[0]
-    momentum_residual = dhu_dt + dflux_dx + g * h * dzb_dx
+    dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
+    momentum_residual = flux_x + g * h * dzb_dx
     #momentum_residual = u_t + u * u_x + g * (h_x + dzb_dx)
     #momentum_residual = u_t + u * u_x + g * h_x   #Momentum residual without bump in bed slope
 
@@ -181,10 +176,9 @@ def improved_physics_loss(h, u, x, t):
     weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
     # Weighted PDE residuals
-    #continuity_loss = torch.mean(continuity_residual**2)
+    continuity_loss = torch.mean(continuity_residual**2)
+    momentum_loss = torch.mean(momentum_residual**2)
     #momentum_loss = torch.mean(wet_mask * momentum_residual**2)
-    continuity_loss = torch.mean((continuity_residual / g)**2)
-    momentum_loss = torch.mean((momentum_residual / (g*eta_val))**2)
 
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
@@ -216,84 +210,56 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     zb_h = 0.2 - 0.05 * (x - 10.0) **2
     return torch.where((x > 8.0) & (x < 12.0), zb_h, zb)
 
-def bed_elevation_np(x: torch.Tensor) -> torch.Tensor:
-    zb = torch.zeros_like(x)
-    zb_h = 0.2 - 0.05 * (x - 10.0) ** 2
-    return torch.where((x < 8.0) & (x , 12.0), zb_h, zb)
+def initial_condition(x, case=6):
+    if case == 6:
+        eta_val, q_val = 0.33, 0.18
+    elif case == 7:
+        eta_val, q_val = 2.0, 4.42
+    else:
+        raise ValueError("Invalid case")
+    
+    zb = bed_elevation(x)
+    eta = torch.ones_like(x) * eta_val
+    h = eta - zb # water depth
+    q = torch.ones_like(x) * q_val
+    u = q / h
+    return h, u
 
-def bed_elevation_np(x: np.ndarray) -> np.ndarray:
-    zb = np.zeros_like(x)
-    zb_h = 0.2 - 0.05 * (x - 10.0) ** 2
-    mask = (x > 8.0) & (x < 12.0)
-    zb[mask] = zb_h[mask]
-    return zb
-
-def dh_dx(x, h):
-    delta = 1e-5
-    zb_plus = bed_elevation_np(np.array([x + delta]))[0]
-    zb_minus = bed_elevation_np(np.array([x - delta]))[0]
-    zb_dx = (zb_plus - zb_minus) / (2 * delta)
-
-    denom = (-q_val**2) / (h**2) + g * h
-    num = -g * h * zb_dx
-    return num / denom
-
-def compute_steady_profile(x_grid, h_right=0.2):
-    eta_right = h_right + bed_elevation_np(np.array([x_grid[-1]]))[0]
-
-    sol = solve_ivp(dh_dx, [x_grid[-1], x_grid[0]], [h_right], t_eval=x_grid[::-1], rtol=1e-6, atol=1e-8)
-    h_profile = sol.y[0][::-1]  
-    u_profile = q_val / h_profile # velocity from discharge
-    return h_profile, u_profile
-
-x_grid = np.linspace(x_min, x_max, num_initial_points)
-h_profile, u_profile = compute_steady_profile(x_grid)   # from ODE solver
-h_profile = h_profile.copy()
-u_profile = u_profile.copy()
-# Store as tensors
-h_profile_torch = torch.tensor(h_profile, dtype=torch.float32).view(-1,1)
-u_profile_torch = torch.tensor(u_profile, dtype=torch.float32).view(-1,1)
-x_grid_torch    = torch.tensor(x_grid, dtype=torch.float32).view(-1,1)
-
-def initial_condition(x: torch.Tensor):
-    x_np = x.detach().cpu().numpy().squeeze()
-
-    h_true_np = np.interp(x_np, x_grid, h_profile)
-    u_true_np = np.interp(x_np, x_grid, u_profile)
-    h_true = torch.tensor(h_true_np, dtype=torch.float32).view(-1,1)
-    u_true = torch.tensor(u_true_np, dtype=torch.float32).view(-1,1)
-
-    return h_true, u_true
-
-def initial_condition_loss(h_pred, u_pred, x):
-    h_true, u_true = initial_condition(x)
-    loss_h = torch.mean((h_pred - h_true) **2)
-    loss_u = torch.mean((u_pred - u_true) **2)
-    return loss_h + loss_u
+# def initial_condition_loss(h_pred, u_pred, x, case=6):
+#     h_true, u_true = initial_condition(x, case)
+#     loss_h = torch.mean((h_pred - h_true) **2)
+#     loss_u = torch.mean((u_pred - u_true) **2)
+#     return loss_h + loss_u
 
 # ------------------ Boundary Conditions ------------------
-def eta_left(t):
-    return torch.tensor(eta_val).repeat(t.shape[0], 1)
+def eta_left():
+    return torch.tensor([[eta_val]], dtype=torch.float32)
 
-def eta_right(t):
-    return torch.tensor(eta_val).repeat(t.shape[0], 1)
+def eta_right():
+    return torch.tensor([[eta_val]], dtype=torch.float32)
 
-def h_bc_left(t):
-    return eta_left(t) - bed_elevation(torch.tensor([[x_min]]))
+def h_bc_left():
+    return eta_val - bed_elevation(torch.tensor([[x_min]]))
 
-def h_bc_right(t):
-    return eta_right(t) - bed_elevation(torch.tensor([[x_max]]))
+def h_bc_right():
+    return eta_val - bed_elevation(torch.tensor([[x_max]]))
 
-def u_bc(t):
-    return torch.tensor(0.0).repeat(t.shape[0], 1)
+def u_bc_left():
+    return torch.tensor([[0.0]])
+
+def u_bc_right():
+    return torch.tensor([[0.0]])
+# def u_bc():
+#     return torch.tensor([[0.0]], dtype=torch.float32)
     #return torch.where(t < 0.0, torch.tensor(u_left), torch.tensor(u_right))  # Dam at x = 0.0
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
     Simple outflow boundary conditions
     """
-    loss_bc_left = torch.mean((h_left_pred - h_bc_left(t_boundary))**2) + torch.mean((u_left_pred - u_bc(t_boundary))**2)
-    loss_bc_right = torch.mean((h_right_pred - h_bc_right(t_boundary))**2) + torch.mean((u_right_pred - u_bc(t_boundary))**2)
+
+    loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
+    loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
     return loss_bc_left + loss_bc_right
     #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
@@ -302,50 +268,16 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
 c0 = np.sqrt(g * eta_val)
 
 x_collocation = torch.rand(int(num_collocation_points), 1) * (x_max - x_min) + x_min
-
-t_early = torch.rand(num_collocation_points // 3, 1) * 0.2 
-t_mid = torch.rand(num_collocation_points // 3, 1) * 0.4 + 0.2 
-t_late = torch.rand(num_collocation_points // 3, 1) * 0.4 + 0.6
-t_collocation = torch.cat([t_early, t_mid, t_late], dim=0)
-
-# Now x_collocation and t_collocation have the same number of rows
-assert x_collocation.shape[0] == t_collocation.shape[0], "x and t collocation sizes must match"
-
-# Initial condition points
-x_initial = torch.linspace(x_min, x_max, num_initial_points).reshape(-1, 1)
-t_initial = torch.zeros(num_initial_points, 1)
-
 # Boundary points
 x_boundary_left = torch.ones(num_boundary_points, 1) * x_min
 x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
-t_boundary = torch.rand(num_boundary_points, 1) * (t_max - t_min) + t_min
 
 # Set requires_grad
 x_collocation.requires_grad_(True)
-t_collocation.requires_grad_(True)
 x_boundary_left.requires_grad_(True)
 x_boundary_right.requires_grad_(True)
 
-#print("Starting improved training for 1D Shallow Water Equations...")
-#=== PHASE 0: IC Pretraining ===
-# print("\nPretraining only on Initial Conditions for 1200 epochs...\n")
-
-# for pre_epoch in range(1200):
-#     optimizer.zero_grad()
-
-#     h_initial_pred, u_initial_pred = model(x_initial, t_initial)
-#     loss_ic = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial)
-#     loss_ic.backward()
-#     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-#     optimizer.step()
-
-#     if (pre_epoch + 1) % 20 == 0:
-#         print(f"Pretraining Epoch {pre_epoch+1}/1200 - IC Loss: {loss_ic.item():.4e}")
-
-# #Reset LR scheduler (optional but recommended)
-# scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
-
-print(f"Domain: x ∈ [{x_min}, {x_max}], t ∈ [{t_min}, {t_max}]")
+print(f"Domain: x ∈ [{x_min}, {x_max}]")
 
 start_time = time.time()
 loss_history = []
@@ -361,17 +293,17 @@ for epoch in range(epochs):
     optimizer.zero_grad()
     
     # Initial condition loss
-    h_initial_pred, u_initial_pred = model(x_initial, t_initial)
-    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial)
+    h_initial_pred, u_initial_pred = model(x_initial)
+    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=7)
 
     # Physics loss
-    h_collocation, u_collocation = model(x_collocation, t_collocation)
+    h_collocation, u_collocation = model(x_collocation)
     loss_pde, pde_components = improved_physics_loss(h_collocation, u_collocation, 
-                                                    x_collocation, t_collocation)
+                                                    x_collocation)
     
     # Boundary loss
-    h_boundary_left, u_boundary_left = model(x_boundary_left, t_boundary)
-    h_boundary_right, u_boundary_right = model(x_boundary_right, t_boundary)
+    h_boundary_left, u_boundary_left = model(x_boundary_left)
+    h_boundary_right, u_boundary_right = model(x_boundary_right)
     loss_boundary = boundary_condition_loss(h_boundary_left, u_boundary_left, 
                                           h_boundary_right, u_boundary_right)
 
@@ -417,38 +349,38 @@ print(f"Training completed in {elapsed_time:.2f} seconds.")
 
 # Generate solution plots
 x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
-time_steps = torch.linspace(t_min, t_max, num_time_steps)
+# time_steps = torch.linspace(t_min, t_max, num_time_steps)
 
 print("\nDiagnostic check: did the model learn anything...")
 # Diagnostic check: did the model learn anything?
-t_plot = torch.ones_like(x_plot) * 0.2  # Choose any t > 0
+# t_plot = torch.ones_like(x_plot) * 0.2  # Choose any t > 0
 
 with torch.no_grad():
-    h_pred, u_pred = model(x_plot, t_plot)
+    h_pred, u_pred = model(x_plot)
     print("Mean h:", h_pred.mean().item(), "Std h:", h_pred.std().item())
     print("Mean u:", u_pred.mean().item(), "Std u:", u_pred.std().item())
 
 print("\nChecking initial condition prediction...")
 model.eval()
 x_test = torch.linspace(x_min, x_max, 500).view(-1, 1)
-t_test = torch.zeros_like(x_test)
+#t_test = torch.zeros_like(x_test)
 with torch.no_grad():
-    h_pred, u_pred = model(x_test, t_test)
+    h_pred, u_pred = model(x_test)
     print("IC Check: Mean h:", h_pred.mean().item(), "Std h:", h_pred.std().item())
     print("IC Check: Mean u:", u_pred.mean().item(), "Std u:", u_pred.std().item())
 
 
 print("\nChecking model for time steps...")
-for i, t_val in enumerate(time_steps):
-    t_plot = torch.ones_like(x_plot) * t_val
+# for i, t_val in enumerate(time_steps):
+#     t_plot = torch.ones_like(x_plot) * t_val
     
-    with torch.no_grad():
-        h_pred, u_pred = model(x_plot, t_plot)
-        h_pred_plot = h_pred.numpy().flatten()
-        u_pred_plot = u_pred.numpy().flatten()
-        # Compute bed elevation and free surface
-        zb_plot = bed_elevation(x_plot)
-        eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
+with torch.no_grad():
+    h_pred, u_pred = model(x_plot)
+    h_pred_plot = h_pred.numpy().flatten()
+    u_pred_plot = u_pred.numpy().flatten()
+    # Compute bed elevation and free surface
+    zb_plot = bed_elevation(x_plot)
+    eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
     # STEP 3: Check PDE Residuals at this time step
     # Temporarily enable autograd
     #x_plot.requires_grad_(True)
@@ -470,7 +402,7 @@ for i, t_val in enumerate(time_steps):
     # model.eval()  # Go back to eval mode for plotting
 
     x_np = x_plot.detach().numpy().flatten()
-    t_np = t_val.item()
+    #t_np = t_val.item()
     
     # Get analytical solution
     #h_exact, u_exact = exact_dam_break_solution(x_np, t_np)
@@ -489,7 +421,7 @@ for i, t_val in enumerate(time_steps):
     #ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     #ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
     ax1.set_ylabel('Water Height h(x,t) [m]')
-    ax1.set_title(f'Water Height - t = {t_np:.3f}s')
+    ax1.set_title(f'Water Height')
     
     ax1.legend()
     ax1.grid(True, alpha=0.3)
@@ -500,7 +432,7 @@ for i, t_val in enumerate(time_steps):
     #ax2.plot(x_np, u_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     #ax2.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
     ax2.set_ylabel('Velocity u(x,t) [m/s]')
-    ax2.set_title(f'Velocity - t = {t_np:.3f}s')
+    ax2.set_title(f'Velocity')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     
@@ -526,7 +458,7 @@ for i, t_val in enumerate(time_steps):
     info_text += f"Training time: {elapsed_time:.1f}s | Final loss: {loss.item():.4e}"
     plt.figtext(0.5, 0.02, info_text, ha='center', fontsize=9)
     
-    plt.savefig(os.path.join(output_dir, f"swe_solution_t_{i:03d}.png"), dpi=150, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, f"swe_solution.png"), dpi=150, bbox_inches='tight')
     plt.close()
 
 # Loss history plot
