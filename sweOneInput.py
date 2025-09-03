@@ -15,11 +15,10 @@ g = 9.81        # Gravitational acceleration (m/s^2)
 
 # Domain parameters
 x_min, x_max = 0.0, 20.0    # Spatial domain [m]
-#t_min, t_max = 0.0, 5.0     # Time domain [s]
 L = x_max - x_min
 
 # Training parameters
-num_initial_points = 1500 # INCREASED from 1000 for better IC sampling
+num_initial_points = 1500 
 num_boundary_points = 200
 epochs = 1000
 num_collocation_points = 6000
@@ -51,9 +50,6 @@ def get_weights(epoch, total_epochs):
 # ------------------ Input Normalization ------------------
 def normalize(x, xmin=0.0, xmax=20.0):
     return 2.0 * (x - xmin) / (xmax - xmin) - 1.0
-
-# def normalize_t(t, tmin=0.0, tmax=1.0):
-#     return 2.0 * (t - tmin) / (tmax - tmin) - 1.0
 
 class ImprovedPINN_SWE(nn.Module):
     """
@@ -115,9 +111,7 @@ class ImprovedPINN_SWE(nn.Module):
     def forward(self, x):
         # Normalize inputs: Neural networks train better with inputs in the range [-1, 1]
         x_norm = normalize(x)
-        #t_norm = normalize_t(t)
         inputs = torch.cat([x_norm], dim=1)
-        #inputs = torch.cat([x, t], dim=1)
         features = self.backbone(inputs)
 
         h_raw = self.h_head(features)
@@ -160,8 +154,6 @@ def improved_physics_loss(h, u, x):
 
     # Wet/dry mask
     #wet_threshold = 0.02 #1e-1 # change these
-    # Sigmoid is not giving good results. 
-    #wet_mask = torch.sigmoid((h - wet_threshold) * 100)  # Smooth transition around wet/dry threshold
     wet_mask = (h > 1e-6).float() #0
     dry_mask = 1.0 - wet_mask
     dry_momentum_penalty = torch.mean(dry_mask * (h * u)**2)
@@ -175,7 +167,6 @@ def improved_physics_loss(h, u, x):
     # Weighted PDE residuals
     continuity_loss = torch.mean(continuity_residual**2)
     momentum_loss = torch.mean(momentum_residual**2)
-    #momentum_loss = torch.mean(wet_mask * momentum_residual**2)
 
     # Penalize dry regions gently
     dry_h_loss = torch.mean(dry_mask * h**2)
@@ -188,15 +179,11 @@ def improved_physics_loss(h, u, x):
         lambda_m = continuity_loss.item() / total_pde_grad
 
     # Combine total PDE loss
-    total_pde_loss = continuity_loss + momentum_loss 
-    #+ 0.1 * (dry_h_loss + dry_u_loss) 
-    #+ 1.0 * dry_momentum_penalty 
+    total_pde_loss = continuity_loss + momentum_loss  
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
         'momentum': momentum_loss.item()
-        #'dry_h': dry_h_loss.item(),
-        #'dry_u': dry_u_loss.item()
     }
 
 # ------------------ Bed Elevation Function ------------------
@@ -245,18 +232,12 @@ def u_bc_left():
     q = torch.tensor([[x_min]]) * q_val
     u = q / h
     return u
-    #return torch.tensor([[0.0]])
 
 def u_bc_right():
     h = eta_right()
     q = torch.tensor([[x_max]]) * q_val
     u = q / h
     return u
-    #return torch.tensor([[0.0]])
-
-# def u_bc():
-#     return torch.tensor([[0.0]], dtype=torch.float32)
-    #return torch.where(t < 0.0, torch.tensor(u_left), torch.tensor(u_right))  # Dam at x = 0.0
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     """
@@ -266,7 +247,6 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
     loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
     return loss_bc_left + loss_bc_right
-    #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
 # Generate training data
 # Initial condition points
@@ -326,12 +306,6 @@ for epoch in range(epochs):
 
     loss.backward()
     
-    # with torch.no_grad():
-    #     h_train_mean = h_collocation.mean().item()
-    #     h_train_std = h_collocation.std().item()
-    #     h_train_max = h_collocation.max().item()
-        #print(f"[Epoch {epoch+1}] h_mean: {h_train_mean:.4f}, h_std: {h_train_std:.4f}, h_max: {h_train_max:.4f}")
-    
     # Gradient clipping
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     
@@ -343,7 +317,6 @@ for epoch in range(epochs):
     
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}")
-        #print(f"  Curriculum Weights - IC: {lambda_ic_curr:.1f}, PDE: {lambda_pde_curr:.1f}, BC: {lambda_bc_curr:.1f}")
         print(f"  Total Loss: {loss.item():.4e}")
         print(f"  IC Loss: {loss_initial.item():.4e}")
         print(f"  PDE Loss: {loss_pde.item():.4e}")
@@ -357,11 +330,8 @@ print(f"Training completed in {elapsed_time:.2f} seconds.")
 
 # Generate solution plots
 x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
-# time_steps = torch.linspace(t_min, t_max, num_time_steps)
 
 print("\nDiagnostic check: did the model learn anything...")
-# Diagnostic check: did the model learn anything?
-# t_plot = torch.ones_like(x_plot) * 0.2  # Choose any t > 0
 
 with torch.no_grad():
     h_pred, u_pred = model(x_plot)
@@ -371,7 +341,6 @@ with torch.no_grad():
 print("\nChecking initial condition prediction...")
 model.eval()
 x_test = torch.linspace(x_min, x_max, 500).view(-1, 1)
-#t_test = torch.zeros_like(x_test)
 with torch.no_grad():
     h_pred, u_pred = model(x_test)
     print("IC Check: Mean h:", h_pred.mean().item(), "Std h:", h_pred.std().item())
@@ -379,8 +348,6 @@ with torch.no_grad():
 
 
 print("\nChecking model for time steps...")
-# for i, t_val in enumerate(time_steps):
-#     t_plot = torch.ones_like(x_plot) * t_val
     
 with torch.no_grad():
     h_pred, u_pred = model(x_plot)
@@ -410,7 +377,6 @@ with torch.no_grad():
     # model.eval()  # Go back to eval mode for plotting
 
     x_np = x_plot.detach().numpy().flatten()
-    #t_np = t_val.item()
     
     # Get analytical solution
     #h_exact, u_exact = exact_dam_break_solution(x_np, t_np)
@@ -478,29 +444,6 @@ plt.title('Training Loss History')
 plt.grid(True, alpha=0.3)
 plt.savefig(os.path.join(output_dir, 'loss_history.png'), dpi=150, bbox_inches='tight')
 plt.close()
-
-# Test initial condition accuracy
-# print("\n" + "="*60)
-# print("INITIAL CONDITION VALIDATION")
-# print("="*60)
-
-# x_test = torch.linspace(x_min, x_max, 100).view(-1, 1)
-# t_test = torch.zeros_like(x_test)
-
-# with torch.no_grad():
-#     h_test, u_test = model(x_test, t_test)
-#     h_test_np = h_test.numpy().flatten()
-#     u_test_np = u_test.numpy().flatten()
-
-# x_test_np = x_test.numpy().flatten()
-# h_exact_test, u_exact_test = exact_dam_break_solution(x_test_np, 0.0)
-
-# h_ic_error = np.mean(np.abs(h_test_np - h_exact_test))
-# u_ic_error = np.mean(np.abs(u_test_np - u_exact_test))
-
-# print(f"Initial condition errors:")
-# print(f"  Water height MAE: {h_ic_error:.6f}")
-# print(f"  Velocity MAE: {u_ic_error:.6f}")
 
 print(f"\nSolution images saved in '{output_dir}'")
 torch.save(model.state_dict(), os.path.join(output_dir, 'curriculum_swe_pinn_model.pth'))
