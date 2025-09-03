@@ -33,6 +33,7 @@ scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch inte
 
 # Initial condition parameters
 eta_val = 0.33
+q_val = 0.18
 
 lambda_c = 1.0
 lambda_m = 10.0  # Increase if momentum is underfitting
@@ -147,8 +148,6 @@ def improved_physics_loss(h, u, x):
     zb = bed_elevation(x)
     h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    #u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-
 
     # Steady continuity residual: ∂(hu)/∂x = 0
     continuity_residual = hu_x
@@ -158,8 +157,6 @@ def improved_physics_loss(h, u, x):
     epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
     momentum_residual = flux_x + g * h * dzb_dx
-    #momentum_residual = u_t + u * u_x + g * (h_x + dzb_dx)
-    #momentum_residual = u_t + u * u_x + g * h_x   #Momentum residual without bump in bed slope
 
     # Wet/dry mask
     #wet_threshold = 0.02 #1e-1 # change these
@@ -191,16 +188,15 @@ def improved_physics_loss(h, u, x):
         lambda_m = continuity_loss.item() / total_pde_grad
 
     # Combine total PDE loss
-    total_pde_loss = lambda_c * continuity_loss 
-    + lambda_m * momentum_loss 
-    + 0.1 * (dry_h_loss + dry_u_loss) 
-    + 1.0 * dry_momentum_penalty 
+    total_pde_loss = continuity_loss + momentum_loss 
+    #+ 0.1 * (dry_h_loss + dry_u_loss) 
+    #+ 1.0 * dry_momentum_penalty 
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
-        'momentum': momentum_loss.item(),
-        'dry_h': dry_h_loss.item(),
-        'dry_u': dry_u_loss.item()
+        'momentum': momentum_loss.item()
+        #'dry_h': dry_h_loss.item(),
+        #'dry_u': dry_u_loss.item()
     }
 
 # ------------------ Bed Elevation Function ------------------
@@ -225,11 +221,11 @@ def initial_condition(x, case=6):
     u = q / h
     return h, u
 
-# def initial_condition_loss(h_pred, u_pred, x, case=6):
-#     h_true, u_true = initial_condition(x, case)
-#     loss_h = torch.mean((h_pred - h_true) **2)
-#     loss_u = torch.mean((u_pred - u_true) **2)
-#     return loss_h + loss_u
+def initial_condition_loss(h_pred, u_pred, x, case=6):
+    h_true, u_true = initial_condition(x, case)
+    loss_h = torch.mean((h_pred - h_true) **2)
+    loss_u = torch.mean((u_pred - u_true) **2)
+    return loss_h + loss_u
 
 # ------------------ Boundary Conditions ------------------
 def eta_left():
@@ -245,10 +241,19 @@ def h_bc_right():
     return eta_val - bed_elevation(torch.tensor([[x_max]]))
 
 def u_bc_left():
-    return torch.tensor([[0.0]])
+    h = eta_left()
+    q = torch.tensor([[x_min]]) * q_val
+    u = q / h
+    return u
+    #return torch.tensor([[0.0]])
 
 def u_bc_right():
-    return torch.tensor([[0.0]])
+    h = eta_right()
+    q = torch.tensor([[x_max]]) * q_val
+    u = q / h
+    return u
+    #return torch.tensor([[0.0]])
+
 # def u_bc():
 #     return torch.tensor([[0.0]], dtype=torch.float32)
     #return torch.where(t < 0.0, torch.tensor(u_left), torch.tensor(u_right))  # Dam at x = 0.0
@@ -264,6 +269,9 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     #return 0.01 * (torch.mean(h_left_pred**2) + torch.mean(h_right_pred**2)) + 0.01 * (torch.mean(u_left_pred**2) + torch.mean(u_right_pred**2))
 
 # Generate training data
+# Initial condition points
+x_initial = torch.linspace(x_min, x_max, num_initial_points).reshape(-1, 1)
+
 # Collocation points: More focused sampling near dam and early times
 c0 = np.sqrt(g * eta_val)
 
@@ -294,7 +302,7 @@ for epoch in range(epochs):
     
     # Initial condition loss
     h_initial_pred, u_initial_pred = model(x_initial)
-    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=7)
+    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=6)
 
     # Physics loss
     h_collocation, u_collocation = model(x_collocation)
