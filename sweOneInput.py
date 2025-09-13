@@ -12,28 +12,24 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
-
 # Domain parameters
 x_min, x_max = 0.0, 20.0    # Spatial domain [m]
 L = x_max - x_min
-
 # Training parameters
 num_initial_points = 1500 
 num_boundary_points = 200
-epochs = 1000
+epochs = 1150
 num_collocation_points = 6000
 learning_rate = 1e-3
 num_time_steps = 20
-
 #Scheduler tuning parameters
 scheduler_step_size_frequency = 2 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
-
 # Initial condition parameters
 eta_val = 0.33
 q_val = 0.18
-
+#Weights
 lambda_c = 1.0
 lambda_m = 10.0  # Increase if momentum is underfitting
 
@@ -42,10 +38,9 @@ output_dir = "swe/temp/swe_solution_oneInput_case6_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 def get_weights(epoch, total_epochs):
-    ic_weight = 100.0 #100
-    pde_weight = 50.0 #10
+    pde_weight = 20.0
     bc_weight = 10.0
-    return ic_weight, pde_weight, bc_weight
+    return pde_weight, bc_weight
 
 # ------------------ Input Normalization ------------------
 def normalize(x, xmin=0.0, xmax=20.0):
@@ -57,51 +52,24 @@ class ImprovedPINN_SWE(nn.Module):
     """
     def __init__(self):
         super(ImprovedPINN_SWE, self).__init__()
-        #num_frequencies = 6
-        input_dim = 2
+        # Start changing the structure of the PINN to simplify it, clean IC and everything related to time
+        # Remove any wet/dry --> this is only for dam break
+        # Fewer layers, remove heads
         
-        # Shared backbone for feature extraction
-        self.backbone = nn.Sequential(
-            nn.Linear(1, 128),  # updated input size
+        # same head for h and u
+        self.hu_head = nn.Sequential(
+            nn.Linear(1, 32),
             nn.Tanh(),
-            nn.Linear(128, 128),
+            nn.Linear(32, 32),
             nn.Tanh(),
-            nn.Linear(128, 128),
+            nn.Linear(32, 32),
             nn.Tanh(),
+            nn.Linear(32, 16),
+            nn.Tanh(),
+            nn.Linear(16, 1)
         )
-        
-        # Separate heads for h and u
-        self.h_head = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)
-        )
-        
-        self.u_head = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)
-        )
-        
         # Initialize weights
         self.apply(self._init_weights)
-        
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -112,11 +80,8 @@ class ImprovedPINN_SWE(nn.Module):
         # Normalize inputs: Neural networks train better with inputs in the range [-1, 1]
         x_norm = normalize(x)
         inputs = torch.cat([x_norm], dim=1)
-        features = self.backbone(inputs)
-
-        h_raw = self.h_head(features)
-        u_raw = self.u_head(features)
-
+        h_raw = self.hu_head(inputs)
+        u_raw = self.hu_head(inputs)
         return h_raw, u_raw
 
 
@@ -140,43 +105,19 @@ def improved_physics_loss(h, u, x):
     hu_x = torch.autograd.grad(q, x, grad_outputs=torch.ones_like(q), create_graph=True)[0]
     flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
     zb = bed_elevation(x)
-    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
-    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
 
     # Steady continuity residual: ∂(hu)/∂x = 0
     continuity_residual = hu_x
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
-    epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
+    #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
     momentum_residual = flux_x + g * h * dzb_dx
-
-    # Wet/dry mask
-    #wet_threshold = 0.02 #1e-1 # change these
-    wet_mask = (h > 1e-6).float() #0
-    dry_mask = 1.0 - wet_mask
-    dry_momentum_penalty = torch.mean(dry_mask * (h * u)**2)
-
-    # Discontinuity detector: total gradient magnitude
-    grad_strength = torch.abs(h_x) + torch.abs(u_x)
-
-    # Gradient-based weighting: reduce loss impact where solution is steep
-    weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(continuity_residual**2)
     momentum_loss = torch.mean(momentum_residual**2)
-
-    # Penalize dry regions gently
-    dry_h_loss = torch.mean(dry_mask * h**2)
-    dry_u_loss = torch.mean(dry_mask * u**2)
-
-    # Dynamic weighting
-    total_pde_grad = continuity_loss.item() + momentum_loss.item()
-    if total_pde_grad > 0:
-        lambda_c = momentum_loss.item() / total_pde_grad
-        lambda_m = continuity_loss.item() / total_pde_grad
 
     # Combine total PDE loss
     total_pde_loss = continuity_loss + momentum_loss  
@@ -192,6 +133,14 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     zb = torch.zeros_like(x)
     zb_h = 0.2 - 0.05 * (x - 10.0) **2
     return torch.where((x > 8.0) & (x < 12.0), zb_h, zb)
+
+def set_eta_q(case=6):
+    if case == 6:
+        eta_val, q_val = 0.33, 0.18
+    elif case == 7:
+        eta_val, q_val = 2.0, 4.42
+    else:
+        raise ValueError("Invalid case")
 
 def initial_condition(x, case=6):
     if case == 6:
@@ -229,13 +178,13 @@ def h_bc_right():
 
 def u_bc_left():
     h = eta_left()
-    q = torch.tensor([[x_min]]) * q_val
+    q = torch.tensor([[q_val]])
     u = q / h
     return u
 
 def u_bc_right():
     h = eta_right()
-    q = torch.tensor([[x_max]]) * q_val
+    q = torch.tensor([[q_val]])
     u = q / h
     return u
 
@@ -250,7 +199,7 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
 
 # Generate training data
 # Initial condition points
-x_initial = torch.linspace(x_min, x_max, num_initial_points).reshape(-1, 1)
+#x_initial = torch.linspace(x_min, x_max, num_initial_points).reshape(-1, 1)
 
 # Collocation points: More focused sampling near dam and early times
 c0 = np.sqrt(g * eta_val)
@@ -276,13 +225,15 @@ model.train()
 lambda_c = 1.0
 lambda_m = 10.0
 
+set_eta_q(6)
+
 # Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
     
     # Initial condition loss
-    h_initial_pred, u_initial_pred = model(x_initial)
-    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=6)
+    #h_initial_pred, u_initial_pred = model(x_initial)
+    #loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=6)
 
     # Physics loss
     h_collocation, u_collocation = model(x_collocation)
@@ -295,12 +246,11 @@ for epoch in range(epochs):
     loss_boundary = boundary_condition_loss(h_boundary_left, u_boundary_left, 
                                           h_boundary_right, u_boundary_right)
 
-    lambda_ic_curr, lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
+    lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
 
     # Total loss
     loss = (
-        lambda_ic_curr * loss_initial
-        + lambda_pde_curr * loss_pde
+        lambda_pde_curr * loss_pde
         + lambda_bc_curr * loss_boundary
     )
 
@@ -318,7 +268,7 @@ for epoch in range(epochs):
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}")
         print(f"  Total Loss: {loss.item():.4e}")
-        print(f"  IC Loss: {loss_initial.item():.4e}")
+        #print(f"  IC Loss: {loss_initial.item():.4e}")
         print(f"  PDE Loss: {loss_pde.item():.4e}")
         print(f"  Boundary Loss: {loss_boundary.item():.4e}")
         print(f"  Continuity: {pde_components['continuity']:.4e}")
