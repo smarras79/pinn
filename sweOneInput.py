@@ -13,13 +13,12 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
 # Domain parameters
-x_min, x_max = 0.0, 20.0    # Spatial domain [m]
+x_min, x_max = 0.0, 50.0    # Spatial domain [m]
 L = x_max - x_min
 # Training parameters
-num_initial_points = 1500 
-num_boundary_points = 200
-epochs = 10000
 num_collocation_points = 6000
+num_boundary_points = 500
+epochs = 6000
 learning_rate = 1e-3
 num_time_steps = 20
 #Scheduler tuning parameters
@@ -29,16 +28,13 @@ scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch inte
 # Initial condition parameters
 eta_val = 0.33
 q_val = 0.18
-#Weights
-lambda_c = 1.0
-lambda_m = 10.0  # Increase if momentum is underfitting
 
 # Output directory
 output_dir = "swe/temp/swe_solution_oneInput_case6_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 def get_weights(epoch, total_epochs):
-    pde_weight = 20.0
+    pde_weight = 5.0
     bc_weight = 10.0
     return pde_weight, bc_weight
 
@@ -133,6 +129,8 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     zb = torch.zeros_like(x)
     zb_h = 0.2 - 0.05 * (x - 10.0) **2
     return torch.where((x > 8.0) & (x < 12.0), zb_h, zb)
+    # zb_h = 0.3 - 0.01875 * (x - 10.0) **2
+    # return torch.where((x > 6.0) & (x < 14.0), zb_h, zb)
 
 def set_eta_q(case=6):
     if case == 6:
@@ -174,7 +172,7 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
 
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
     loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
-    return loss_bc_left + loss_bc_right
+    return 0.1 * (loss_bc_left + loss_bc_right)
 
 c0 = np.sqrt(g * eta_val)
 # Generate training data
@@ -195,10 +193,6 @@ start_time = time.time()
 loss_history = []
 
 model.train()
-
-# Loss weights
-lambda_c = 1.0
-lambda_m = 10.0
 
 #Setting test case here. 
 set_eta_q(6)
