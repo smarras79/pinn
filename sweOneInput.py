@@ -18,7 +18,7 @@ L = x_max - x_min
 # Training parameters
 num_initial_points = 1500 
 num_boundary_points = 200
-epochs = 1150
+epochs = 10000
 num_collocation_points = 6000
 learning_rate = 1e-3
 num_time_steps = 20
@@ -142,27 +142,6 @@ def set_eta_q(case=6):
     else:
         raise ValueError("Invalid case")
 
-def initial_condition(x, case=6):
-    if case == 6:
-        eta_val, q_val = 0.33, 0.18
-    elif case == 7:
-        eta_val, q_val = 2.0, 4.42
-    else:
-        raise ValueError("Invalid case")
-    
-    zb = bed_elevation(x)
-    eta = torch.ones_like(x) * eta_val
-    h = eta - zb # water depth
-    q = torch.ones_like(x) * q_val
-    u = q / h
-    return h, u
-
-def initial_condition_loss(h_pred, u_pred, x, case=6):
-    h_true, u_true = initial_condition(x, case)
-    loss_h = torch.mean((h_pred - h_true) **2)
-    loss_u = torch.mean((u_pred - u_true) **2)
-    return loss_h + loss_u
-
 # ------------------ Boundary Conditions ------------------
 def eta_left():
     return torch.tensor([[eta_val]], dtype=torch.float32)
@@ -197,13 +176,9 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
     return loss_bc_left + loss_bc_right
 
-# Generate training data
-# Initial condition points
-#x_initial = torch.linspace(x_min, x_max, num_initial_points).reshape(-1, 1)
-
-# Collocation points: More focused sampling near dam and early times
 c0 = np.sqrt(g * eta_val)
-
+# Generate training data
+# Collocation points
 x_collocation = torch.rand(int(num_collocation_points), 1) * (x_max - x_min) + x_min
 # Boundary points
 x_boundary_left = torch.ones(num_boundary_points, 1) * x_min
@@ -225,21 +200,18 @@ model.train()
 lambda_c = 1.0
 lambda_m = 10.0
 
+#Setting test case here. 
 set_eta_q(6)
 
 # Training loop
 for epoch in range(epochs):
     optimizer.zero_grad()
     
-    # Initial condition loss
-    #h_initial_pred, u_initial_pred = model(x_initial)
-    #loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=6)
-
     # Physics loss
     h_collocation, u_collocation = model(x_collocation)
     loss_pde, pde_components = improved_physics_loss(h_collocation, u_collocation, 
                                                     x_collocation)
-    
+  
     # Boundary loss
     h_boundary_left, u_boundary_left = model(x_boundary_left)
     h_boundary_right, u_boundary_right = model(x_boundary_right)
@@ -264,11 +236,9 @@ for epoch in range(epochs):
     
     loss_history.append(loss.item())
     
-    
     if (epoch + 1) % 100 == 0:
         print(f"Epoch {epoch+1}/{epochs}")
         print(f"  Total Loss: {loss.item():.4e}")
-        #print(f"  IC Loss: {loss_initial.item():.4e}")
         print(f"  PDE Loss: {loss_pde.item():.4e}")
         print(f"  Boundary Loss: {loss_boundary.item():.4e}")
         print(f"  Continuity: {pde_components['continuity']:.4e}")
@@ -282,23 +252,12 @@ print(f"Training completed in {elapsed_time:.2f} seconds.")
 x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
 
 print("\nDiagnostic check: did the model learn anything...")
-
 with torch.no_grad():
     h_pred, u_pred = model(x_plot)
     print("Mean h:", h_pred.mean().item(), "Std h:", h_pred.std().item())
     print("Mean u:", u_pred.mean().item(), "Std u:", u_pred.std().item())
 
-print("\nChecking initial condition prediction...")
-model.eval()
-x_test = torch.linspace(x_min, x_max, 500).view(-1, 1)
-with torch.no_grad():
-    h_pred, u_pred = model(x_test)
-    print("IC Check: Mean h:", h_pred.mean().item(), "Std h:", h_pred.std().item())
-    print("IC Check: Mean u:", u_pred.mean().item(), "Std u:", u_pred.std().item())
-
-
 print("\nChecking model for time steps...")
-    
 with torch.no_grad():
     h_pred, u_pred = model(x_plot)
     h_pred_plot = h_pred.numpy().flatten()
@@ -306,26 +265,6 @@ with torch.no_grad():
     # Compute bed elevation and free surface
     zb_plot = bed_elevation(x_plot)
     eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
-    # STEP 3: Check PDE Residuals at this time step
-    # Temporarily enable autograd
-    #x_plot.requires_grad_(True)
-    #t_plot.requires_grad_(True)
-
-    # model.train()  # Needed for autograd to work properly
-    # h_train, u_train = model(x_plot, t_plot)
-
-    # # Compute physics residuals
-    # pde_loss, residuals = improved_physics_loss(h_train, u_train, x_plot, t_plot)
-
-    # print(f"[t = {t_val.item():.3f} s] PDE Loss = {pde_loss.item():.4e}")
-    # print(f"  Continuity Residual: {residuals['continuity']:.4e}")
-    # print(f"  Momentum Residual:   {residuals['momentum']:.4e}")
-    # print(f"  Dry h Residual:      {residuals['dry_h']:.4e}")
-    # print(f"  Dry u Residual:      {residuals['dry_u']:.4e}")
-    # print("-" * 40)
-
-    # model.eval()  # Go back to eval mode for plotting
-
     x_np = x_plot.detach().numpy().flatten()
     
     # Get analytical solution
