@@ -54,16 +54,19 @@ class ImprovedPINN_SWE(nn.Module):
         
         # same head for h and u
         self.hu_head = nn.Sequential(
-            nn.Linear(1, 32),
+            nn.Linear(1, 128),
             nn.Tanh(),
-            nn.Linear(32, 32),
+            nn.Linear(128, 128),
             nn.Tanh(),
-            nn.Linear(32, 32),
+            nn.Linear(128, 64),
+            nn.Tanh(),
+            nn.Linear(64, 32),
             nn.Tanh(),
             nn.Linear(32, 16),
             nn.Tanh(),
             nn.Linear(16, 1)
         )
+
         # Initialize weights
         self.apply(self._init_weights)
 
@@ -74,10 +77,8 @@ class ImprovedPINN_SWE(nn.Module):
 
     def forward(self, x):
         # Normalize inputs: Neural networks train better with inputs in the range [-1, 1]
-        x_norm = normalize(x)
-        inputs = torch.cat([x_norm], dim=1)
-        h_raw = self.hu_head(inputs)
-        u_raw = self.hu_head(inputs)
+        h_raw = self.hu_head(x)
+        u_raw = self.hu_head(x)
         return h_raw, u_raw
 
 
@@ -313,7 +314,7 @@ with torch.no_grad():
     # Add information text
     info_text = f"Epochs: {epochs} | Points: {num_collocation_points}\n"
     info_text += f"Training time: {elapsed_time:.1f}s | Final loss: {loss.item():.4e}"
-    plt.figtext(0.5, 0.02, info_text, ha='center', fontsize=9)
+    plt.figtext(0.5, 0.0, info_text, ha='center', fontsize=9)
     
     plt.savefig(os.path.join(output_dir, f"swe_solution.png"), dpi=150, bbox_inches='tight')
     plt.close()
