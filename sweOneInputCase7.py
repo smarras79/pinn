@@ -18,11 +18,11 @@ L = x_max - x_min
 # Training parameters
 num_collocation_points = 6000
 num_boundary_points = 500
-epochs = 2000
+epochs = 8000
 learning_rate = 1e-3
 num_time_steps = 20
 #Scheduler tuning parameters
-scheduler_step_size_frequency = 4 #Number of times we want scheduler to reduce LR during full training with epochs
+scheduler_step_size_frequency = 1 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 # Initial condition parameters
@@ -52,8 +52,8 @@ class ImprovedPINN_SWE(nn.Module):
         self.hu_head = nn.Sequential(
             nn.Linear(1, 128),
             nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
+            # nn.Linear(128, 128),
+            # nn.Tanh(),
             nn.Linear(128, 64),
             nn.Tanh(),
             nn.Linear(64, 32),
@@ -64,7 +64,7 @@ class ImprovedPINN_SWE(nn.Module):
         )
 
         # Initialize weights
-        self.apply(self._init_weights)
+        #self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -106,7 +106,11 @@ def improved_physics_loss(h, u, x):
     # Change the momentum residual to include the bed slope ∂zb/∂x
     #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
-    momentum_residual = flux_x - g * h * dzb_dx
+
+    #friction slope
+    manning = 0.04
+    sfx = manning**2 * u**2 / h**(4/3)
+    momentum_residual = flux_x + g * h * dzb_dx + g * h * sfx
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(continuity_residual**2)
