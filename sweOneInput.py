@@ -18,11 +18,11 @@ L = x_max - x_min
 # Training parameters
 num_collocation_points = 6000
 num_boundary_points = 500
-epochs = 6000
+epochs = 2000
 learning_rate = 1e-3
 num_time_steps = 20
 #Scheduler tuning parameters
-scheduler_step_size_frequency = 2 #Number of times we want scheduler to reduce LR during full training with epochs
+scheduler_step_size_frequency = 1 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
 # Initial condition parameters
@@ -37,10 +37,6 @@ def get_weights(epoch, total_epochs):
     pde_weight = 5.0
     bc_weight = 10.0
     return pde_weight, bc_weight
-
-# ------------------ Input Normalization ------------------
-def normalize(x, xmin=0.0, xmax=20.0):
-    return 2.0 * (x - xmin) / (xmax - xmin) - 1.0
 
 class ImprovedPINN_SWE(nn.Module):
     """
@@ -68,7 +64,7 @@ class ImprovedPINN_SWE(nn.Module):
         )
 
         # Initialize weights
-        self.apply(self._init_weights)
+        #self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -79,7 +75,9 @@ class ImprovedPINN_SWE(nn.Module):
         # Normalize inputs: Neural networks train better with inputs in the range [-1, 1]
         h_raw = self.hu_head(x)
         u_raw = self.hu_head(x)
-        return h_raw, u_raw
+        epsilon = 1e-3
+        return torch.clamp(h_raw, min=epsilon), u_raw
+        # return h_raw, u_raw
 
 
 # Instantiate the network
@@ -110,7 +108,11 @@ def improved_physics_loss(h, u, x):
     # Change the momentum residual to include the bed slope ∂zb/∂x
     #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
-    momentum_residual = flux_x + g * h * dzb_dx
+
+    #friction slope
+    manning = 0.03
+    sfx = manning**2 * u * torch.abs(u) / h**(4.0/3.0)
+    momentum_residual = flux_x + g * h * dzb_dx + g * h * sfx
 
     # Weighted PDE residuals
     continuity_loss = torch.mean(continuity_residual**2)
@@ -178,7 +180,16 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
 c0 = np.sqrt(g * eta_val)
 # Generate training data
 # Collocation points
-x_collocation = torch.rand(int(num_collocation_points), 1) * (x_max - x_min) + x_min
+#x_collocation = torch.rand(int(num_collocation_points), 1) * (x_max - x_min) + x_min
+
+
+# Enhanced training data sampling
+# Much denser sampling near bump
+x_bump_region = torch.linspace(8, 12, num_collocation_points // 4)
+x_outer_left = torch.linspace(x_min, 8, num_collocation_points // 3)
+x_outer_right = torch.linspace(12, x_max, num_collocation_points // 3)
+x_collocation = torch.cat([x_outer_left, x_bump_region, x_outer_right]).reshape(-1, 1)
+
 # Boundary points
 x_boundary_left = torch.ones(num_boundary_points, 1) * x_min
 x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
@@ -224,7 +235,7 @@ for epoch in range(epochs):
     loss.backward()
     
     # Gradient clipping
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
     
     optimizer.step()
     scheduler.step()
