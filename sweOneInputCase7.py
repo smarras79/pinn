@@ -52,8 +52,8 @@ class ImprovedPINN_SWE(nn.Module):
         self.hu_head = nn.Sequential(
             nn.Linear(1, 128),
             nn.Tanh(),
-            # nn.Linear(128, 128),
-            # nn.Tanh(),
+            nn.Linear(128, 128),
+            nn.Tanh(),
             nn.Linear(128, 64),
             nn.Tanh(),
             nn.Linear(64, 32),
