@@ -13,7 +13,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
 # Domain parameters
-x_min, x_max = 0.0, 50.0    # Spatial domain [m]
+x_min, x_max = 0.0, 25.0    # Spatial domain [m]
 L = x_max - x_min
 # Training parameters
 num_collocation_points = 6000
@@ -22,20 +22,24 @@ epochs = 2000
 learning_rate = 1e-3
 num_time_steps = 20
 #Scheduler tuning parameters
-scheduler_step_size_frequency = 1 #Number of times we want scheduler to reduce LR during full training with epochs
+scheduler_step_size_frequency = 4 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
-scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
+scheduler_gamma=0.8 #Factor by which scheduler will reduce LR at each epoch interval
 # Initial condition parameters
 eta_val = 0.33
-q_val = 0.18
+q_val = 0.18 #0.18
+
+gradient_based_weighting = False
 
 # Output directory
 output_dir = "swe/temp/swe_solution_oneInput_case6_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 def get_weights(epoch, total_epochs):
-    pde_weight = 5.0
-    bc_weight = 10.0
+     # start with strong BC enforcement, gradually relax
+    bc_weight = 500.0 if epoch < 1000 else 50.0
+    pde_weight = 10.0
+    #bc_weight = 10.0
     return pde_weight, bc_weight
 
 class ImprovedPINN_SWE(nn.Module):
@@ -64,7 +68,7 @@ class ImprovedPINN_SWE(nn.Module):
         )
 
         # Initialize weights
-        #self.apply(self._init_weights)
+        self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -72,7 +76,6 @@ class ImprovedPINN_SWE(nn.Module):
             torch.nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        # Normalize inputs: Neural networks train better with inputs in the range [-1, 1]
         h_raw = self.hu_head(x)
         u_raw = self.hu_head(x)
         epsilon = 1e-3
@@ -99,6 +102,8 @@ def improved_physics_loss(h, u, x):
     # Compute derivatives
     hu_x = torch.autograd.grad(q, x, grad_outputs=torch.ones_like(q), create_graph=True)[0]
     flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
+    h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     zb = bed_elevation(x)
 
     # Steady continuity residual: ∂(hu)/∂x = 0
@@ -110,16 +115,36 @@ def improved_physics_loss(h, u, x):
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
 
     #friction slope
-    manning = 0.03
-    sfx = manning**2 * u * torch.abs(u) / h**(4.0/3.0)
+    manning = 0.04
+    sfx = manning**2 * u * torch.abs(u) / h.clamp(min=1e-3)**(4.0/3.0)
+
     momentum_residual = flux_x + g * h * dzb_dx + g * h * sfx
 
-    # Weighted PDE residuals
-    continuity_loss = torch.mean(continuity_residual**2)
-    momentum_loss = torch.mean(momentum_residual**2)
+
+    # explicit q constraint — helps enforce constant discharge
+    bump_mask = (x > 8.0) & (x < 12.0)
+    q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
+    #q_loss = torch.mean((q - q_val)**2)
+
+    # Discontinuity detector: total gradient magnitude
+    if gradient_based_weighting == True:
+        grad_strength = torch.abs(h_x) + torch.abs(u_x)
+        # Gradient-based weighting: reduce loss impact where solution is steep
+        weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
+        bump_loss_weight = torch.exp(-grad_strength * bump_mask.float())
+        combined_weight = bump_loss_weight * weight_map
+
+
+    if gradient_based_weighting == True:
+        # Weighted PDE residuals
+        continuity_loss = torch.mean(combined_weight * continuity_residual**2)
+        momentum_loss = torch.mean(combined_weight * momentum_residual**2)
+    else:
+        continuity_loss = torch.mean(continuity_residual**2)
+        momentum_loss = torch.mean(momentum_residual**2)
 
     # Combine total PDE loss
-    total_pde_loss = continuity_loss + momentum_loss  
+    total_pde_loss = continuity_loss + momentum_loss + 100 * q_loss 
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
@@ -137,7 +162,7 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
 
 def set_eta_q(case=6):
     if case == 6:
-        eta_val, q_val = 0.33, 0.18
+        eta_val, q_val = 0.33, 0.18 #0.33 , 0.18
     elif case == 7:
         eta_val, q_val = 2.0, 4.42
     else:
@@ -174,8 +199,8 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     """
 
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
-    loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
-    return 0.1 * (loss_bc_left + loss_bc_right)
+    #loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
+    return (loss_bc_left) # + loss_bc_right)
 
 c0 = np.sqrt(g * eta_val)
 # Generate training data
@@ -226,16 +251,21 @@ for epoch in range(epochs):
 
     lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
 
+    # explicit q constraint — helps enforce constant discharge
+    # q_collocation = h_collocation * u_collocation
+    # loss_q = torch.mean((q_collocation - q_val)**2)
+
     # Total loss
     loss = (
         lambda_pde_curr * loss_pde
         + lambda_bc_curr * loss_boundary
+        # + 10.0 * loss_q
     )
 
     loss.backward()
     
     # Gradient clipping
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     
     optimizer.step()
     scheduler.step()
@@ -250,6 +280,7 @@ for epoch in range(epochs):
         print(f"  Continuity: {pde_components['continuity']:.4e}")
         print(f"  Momentum: {pde_components['momentum']:.4e}")
         print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
+        
 
 elapsed_time = time.time() - start_time
 print(f"Training completed in {elapsed_time:.2f} seconds.")
@@ -260,8 +291,11 @@ x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
 print("\nDiagnostic check: did the model learn anything...")
 with torch.no_grad():
     h_pred, u_pred = model(x_plot)
+    Fr = (u_pred / torch.sqrt(g * h_pred)).cpu().numpy()
+    minFr = float(Fr.min()); maxFr = float(Fr.max())
     print("Mean h:", h_pred.mean().item(), "Std h:", h_pred.std().item())
     print("Mean u:", u_pred.mean().item(), "Std u:", u_pred.std().item())
+    print(f"Fr-range ({minFr:.3f},{maxFr:.3f})")
 
 print("\nChecking model for time steps...")
 with torch.no_grad():
