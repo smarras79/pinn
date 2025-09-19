@@ -172,7 +172,7 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
 
 def bed_elevation_soft_condition(x: torch.Tensor) -> torch.Tensor:
     factor = torch.ones_like(x) * 1.0
-    factor_h = torch.ones_like(x) * 0.9
+    factor_h = torch.ones_like(x) * 0.7
     return torch.where((x > 8.0) & (x < 12.0), factor_h, factor)
 
 def set_eta_q(case=6):
