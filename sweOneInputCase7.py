@@ -18,7 +18,7 @@ L = x_max - x_min
 # Training parameters
 num_collocation_points = 6000
 num_boundary_points = 500
-epochs = 8000
+epochs = 4000
 learning_rate = 1e-3
 num_time_steps = 20
 #Scheduler tuning parameters
@@ -108,8 +108,8 @@ def improved_physics_loss(h, u, x):
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
 
     #friction slope
-    manning = 0.04
-    sfx = manning**2 * u**2 / h**(4/3)
+    manning = 0.0
+    sfx = manning**2 * u * torch.abs(u) / h.clamp(min=1e-3)**(4.0/3.0)
     momentum_residual = flux_x + g * h * dzb_dx + g * h * sfx
 
     # Weighted PDE residuals
