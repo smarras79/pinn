@@ -29,7 +29,7 @@ scheduler_gamma=0.8 #Factor by which scheduler will reduce LR at each epoch inte
 eta_val = 0.33
 q_val = 0.18 #0.18
 
-gradient_based_weighting = False
+gradient_based_weighting = True
 
 # Output directory
 output_dir = "swe/temp/swe_solution_oneInput_case6_" + str(epochs)
@@ -106,45 +106,55 @@ def improved_physics_loss(h, u, x):
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     zb = bed_elevation(x)
 
+    soft_factor = bed_elevation_soft_condition(x)
+
+    #friction slope
+    # manning = 0.0
+    # sfx = manning**2 * u * torch.abs(u) / h.clamp(min=1e-3)**(4.0/3.0)
+
+    # explicit q constraint — helps enforce constant discharge
+    bump_mask = ((x > 8.0) & (x < 12.0)).float()
+    #outside_bump_mask = 1.0 - bump_mask
+    #q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
+    #q_loss = torch.mean((q - q_val)**2)
+
+    # gaussian_distribution = torch.exp(-(x-10)**2)/2
+    # gaussian_distribution_bump_mask = bump_mask * gaussian_distribution
+
     # Steady continuity residual: ∂(hu)/∂x = 0
     continuity_residual = hu_x
+
+    #continuity_residual_bump = bump_mask * hu_x
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
     #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
 
-    #friction slope
-    manning = 0.04
-    sfx = manning**2 * u * torch.abs(u) / h.clamp(min=1e-3)**(4.0/3.0)
 
-    momentum_residual = flux_x + g * h * dzb_dx + g * h * sfx
+    momentum_residual = flux_x + soft_factor * g * h * dzb_dx #+ g * h * sfx
 
-
-    # explicit q constraint — helps enforce constant discharge
-    bump_mask = (x > 8.0) & (x < 12.0)
-    q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
-    #q_loss = torch.mean((q - q_val)**2)
 
     # Discontinuity detector: total gradient magnitude
     if gradient_based_weighting == True:
         grad_strength = torch.abs(h_x) + torch.abs(u_x)
         # Gradient-based weighting: reduce loss impact where solution is steep
-        weight_map = 1.0 / (1.0 + 0.5 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
-        bump_loss_weight = torch.exp(-grad_strength * bump_mask.float())
-        combined_weight = bump_loss_weight * weight_map
+        weight_map = 1.0 / (1.0 + 0.8 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
+        #bump_loss_weight = torch.exp(-grad_strength * bump_mask.float())
+        #combined_weight = bump_loss_weight * weight_map
+        combined_weight = weight_map * torch.exp(-grad_strength * bump_mask.float())
 
 
     if gradient_based_weighting == True:
         # Weighted PDE residuals
-        continuity_loss = torch.mean(combined_weight * continuity_residual**2)
-        momentum_loss = torch.mean(combined_weight * momentum_residual**2)
+        continuity_loss = torch.mean( weight_map * continuity_residual**2)
+        momentum_loss = torch.mean( weight_map * momentum_residual**2)
     else:
         continuity_loss = torch.mean(continuity_residual**2)
         momentum_loss = torch.mean(momentum_residual**2)
 
     # Combine total PDE loss
-    total_pde_loss = continuity_loss + momentum_loss + 100 * q_loss 
+    total_pde_loss = continuity_loss + momentum_loss #+ torch.mean(continuity_residual_bump**2) + 100 * q_loss 
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
@@ -159,6 +169,11 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     return torch.where((x > 8.0) & (x < 12.0), zb_h, zb)
     # zb_h = 0.3 - 0.01875 * (x - 10.0) **2
     # return torch.where((x > 6.0) & (x < 14.0), zb_h, zb)
+
+def bed_elevation_soft_condition(x: torch.Tensor) -> torch.Tensor:
+    factor = torch.ones_like(x) * 1.0
+    factor_h = torch.ones_like(x) * 0.9
+    return torch.where((x > 8.0) & (x < 12.0), factor_h, factor)
 
 def set_eta_q(case=6):
     if case == 6:
@@ -179,7 +194,7 @@ def h_bc_left():
     return eta_val - bed_elevation(torch.tensor([[x_min]]))
 
 def h_bc_right():
-    return eta_val - bed_elevation(torch.tensor([[x_max]]))
+    return eta_val #- bed_elevation(torch.tensor([[x_max]]))
 
 def u_bc_left():
     h = eta_left()
@@ -199,8 +214,8 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     """
 
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
-    #loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
-    return (loss_bc_left) # + loss_bc_right)
+    loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
+    return loss_bc_left  + loss_bc_right
 
 c0 = np.sqrt(g * eta_val)
 # Generate training data
