@@ -324,7 +324,7 @@ for epoch in range(epochs):
     
     # Initial condition loss
     h_initial_pred, u_initial_pred = model(x_initial, t_initial)
-    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=7)
+    loss_initial = initial_condition_loss(h_initial_pred, u_initial_pred, x_initial, case=6)
 
     # Physics loss
     h_collocation, u_collocation = model(x_collocation, t_collocation)
