@@ -13,7 +13,7 @@ import time
 
 # Parameters
 c     = 1.0     # Advection velocity
-alpha = 0.0    # Diffusion coefficient (set to 0.0 for no diffusion)
+alpha = 0.1    # Diffusion coefficient (set to 0.0 for no diffusion)
                 # If alpha is set to anything other than 0, then burgers is viscous not inviscid
 A = 1.0         # Amplitude of the Gaussian
 x0 = 0.0          # Mean (center) of the Gaussian
@@ -22,28 +22,31 @@ num_terms = 10  # Number of shift terms (summation from -n to n eg if n=10 then 
 x_min, x_max = -np.pi, np.pi
 t_min, t_max = 0.0, 2/math.pi
 L = x_max - x_min #period of the domain (x_max - x_min)
-lambda_ic = 1.0
-lambda_pde = 1.0
-lambda_bc = 100.0
+lambda_ic = 100.0
+lambda_pde = 10.0
+lambda_bc = 10.0
 
 
 num_initial_points  = 500
 num_boundary_points = 500
 
-epochs = 20000 
+epochs = 10000 
 num_collocation_points = 1000
-learning_rate = 1e-4
+learning_rate = 1e-2
 
 num_time_steps = 10                                     # Number of time steps for output
-eqs = "burgers"                                         #Possible values: burgers OR advection
+eqs = "advection"                                         #Possible values: burgers OR advection
 initial_condition_loss_type = "sinusoidal"                #Possible values: sinusoidal OR gaussian
-exact_solution_type = "exact_gaussian_burgers_solution" #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution OR exact_gaussian_burgers_solution
-lplot_exact = False                                      #Possible values: True OR False
+exact_solution_type = "exact_viscous_burgers_solution" #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution OR exact_gaussian_burgers_solution
+lplot_exact = True                                      #Possible values: True OR False
 lplot_PINN = True                                       #Possible values: True OR False
 
 # Output directory
 output_dir = "solution_images" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
+
+# Parameters
+nu = 0.01  # viscosity
 
 # Neural Network
 
@@ -122,9 +125,7 @@ def initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma):
     if eqs == "advection":
         #u_true_initial = periodic_gaussian(x_initial, t=torch.tensor([0.0]), c=c, A=A, x0=x0, sigma=sigma, L=L, num_terms=num_terms)
         u_true_initial = torch.sin(torch.pi * x_initial)
-        return torch.mean((u_initial_pred - u_true_initial)**2)
     elif eqs == "burgers":
-        
         if initial_condition_loss_type == "sinusoidal":
             #completely ignore: u_true_initial = -torch.sin(x_initial)
             u_true_initial = torch.sin(torch.pi * x_initial) + 0.5
@@ -135,7 +136,7 @@ def initial_condition_loss(u_initial_pred, x_initial, eqs, A, x0, sigma):
         x0 = 1.0
         u_true_initial = torch.where(x_initial < x0, torch.tensor(H), torch.tensor(0.0))
         
-        return torch.mean((u_initial_pred - u_true_initial)**2)
+    return torch.mean((u_initial_pred - u_true_initial)**2)
 
 # Boundary condition (e.g., periodic boundaries)
 def boundary_condition_loss(u_left, u_right):
@@ -260,8 +261,6 @@ def exact_viscous_burgers_solution(x, t, nu, N=2):
 
 import torch
 
-# Parameters
-nu = alpha  # viscosity
 
 """
 Integration settings. This is not working at this time.

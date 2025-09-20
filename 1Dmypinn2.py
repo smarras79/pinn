@@ -31,7 +31,7 @@ num_collocation_points = 100
 learning_rate = 1e-3
 
 num_time_steps = 10                                     # Number of time steps for output
-eqs = "burgers"                                         #Possible values: burgers OR advection
+eqs = "advection"                                         #Possible values: burgers OR advection
 initial_condition_loss_type = "sinusodial"              #Possible values: sinusodial OR gaussian
 exact_solution_type = "travelling_wave_solution"        #Possible values: exact_viscous_burgers_solution OR travelling_wave_solution
 lplot_exact = True                                      #Possible values: True OR False
