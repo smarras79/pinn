@@ -115,8 +115,8 @@ def improved_physics_loss(h, u, x):
     # explicit q constraint — helps enforce constant discharge
     bump_mask = ((x > 8.0) & (x < 12.0)).float()
     #outside_bump_mask = 1.0 - bump_mask
-    #q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
-    #q_loss = torch.mean((q - q_val)**2)
+    q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
+    q_loss = torch.mean((q - q_val)**2)
 
     #compute h at bump and enforce it to be more than bump height
     h_threshold_bump_region = bump_mask * bed_elevation(x)
@@ -157,7 +157,7 @@ def improved_physics_loss(h, u, x):
         momentum_loss = torch.mean(momentum_residual**2)
 
     # Combine total PDE loss
-    total_pde_loss = continuity_loss + momentum_loss + momentum_loss_bump_region #+ torch.mean(continuity_residual_bump**2) + 100 * q_loss 
+    total_pde_loss = continuity_loss + momentum_loss + momentum_loss_bump_region + q_loss #+ torch.mean(continuity_residual_bump**2)  
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
@@ -175,13 +175,13 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
 
 def bed_elevation_synthetic(x: torch.Tensor) -> torch.Tensor:
     zb = torch.zeros_like(x)
-    zb_h = 0.1 - (0.025) * (x - 11.0) **2
+    zb_h = 0.2 - (0.2/4.0) * (x - 11.0) **2
     return torch.where((x > 9.0) & (x < 13.0), zb_h, zb)
 
 def bed_elevation_softer_condition(x: torch.Tensor) -> torch.Tensor:
     factor = torch.ones_like(x) * 1.0
     factor_h = torch.ones_like(x) * 0.77
-    return torch.where((x > 8.0) & (x < 12.0), factor_h, factor)
+    return torch.where((x > 9.0) & (x < 13.0), factor_h, factor)
 
 def set_eta_q(case=6):
     if case == 6:
@@ -328,6 +328,7 @@ with torch.no_grad():
     zb_plot = bed_elevation(x_plot)
     eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
     x_np = x_plot.detach().numpy().flatten()
+    zb_synthetic_plot = bed_elevation_synthetic(x_plot)
     
     # Get analytical solution
     #h_exact, u_exact = exact_dam_break_solution(x_np, t_np)
@@ -343,6 +344,7 @@ with torch.no_grad():
     ax1.plot(x_np, h_pred_plot, 'b-', label='PINN h(x,t)', linewidth=2)
     ax1.plot(x_np, eta_plot, 'm--', label='Free surface η = h + zb', linewidth=2)
     ax1.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
+    ax1.plot(x_np, zb_synthetic_plot, 'y--', label='Synthetic topography zb(x)', linewidth=1.5)
     #ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     #ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
     ax1.set_ylabel('Water Height h(x,t) [m]')
