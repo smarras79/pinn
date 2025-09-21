@@ -38,7 +38,7 @@ os.makedirs(output_dir, exist_ok=True)
 def get_weights(epoch, total_epochs):
      # start with strong BC enforcement, gradually relax
     bc_weight = 500.0 if epoch < 1000 else 50.0
-    pde_weight = 10.0
+    pde_weight = 100.0
     #bc_weight = 10.0
     return pde_weight, bc_weight
 
@@ -104,9 +104,9 @@ def improved_physics_loss(h, u, x):
     flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
     h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    zb = bed_elevation(x)
+    zb = bed_elevation_synthetic(x)
 
-    soft_factor = bed_elevation_soft_condition(x)
+    soft_factor = bed_elevation_softer_condition(x)
 
     #friction slope
     # manning = 0.0
@@ -117,6 +117,10 @@ def improved_physics_loss(h, u, x):
     #outside_bump_mask = 1.0 - bump_mask
     #q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
     #q_loss = torch.mean((q - q_val)**2)
+
+    #compute h at bump and enforce it to be more than bump height
+    h_threshold_bump_region = bump_mask * bed_elevation(x)
+    h_threshold_bump_region_mask = (h > h_threshold_bump_region).float()
 
     # gaussian_distribution = torch.exp(-(x-10)**2)/2
     # gaussian_distribution_bump_mask = bump_mask * gaussian_distribution
@@ -131,9 +135,7 @@ def improved_physics_loss(h, u, x):
     #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
 
-
     momentum_residual = flux_x + soft_factor * g * h * dzb_dx #+ g * h * sfx
-
 
     # Discontinuity detector: total gradient magnitude
     if gradient_based_weighting == True:
@@ -147,14 +149,15 @@ def improved_physics_loss(h, u, x):
 
     if gradient_based_weighting == True:
         # Weighted PDE residuals
-        continuity_loss = torch.mean( weight_map * continuity_residual**2)
+        momentum_loss_bump_region = torch.mean( h_threshold_bump_region_mask * weight_map * momentum_residual**2)
+        continuity_loss = torch.mean( h_threshold_bump_region_mask * weight_map * continuity_residual**2)
         momentum_loss = torch.mean( weight_map * momentum_residual**2)
     else:
         continuity_loss = torch.mean(continuity_residual**2)
         momentum_loss = torch.mean(momentum_residual**2)
 
     # Combine total PDE loss
-    total_pde_loss = continuity_loss + momentum_loss #+ torch.mean(continuity_residual_bump**2) + 100 * q_loss 
+    total_pde_loss = continuity_loss + momentum_loss + momentum_loss_bump_region #+ torch.mean(continuity_residual_bump**2) + 100 * q_loss 
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
@@ -170,9 +173,14 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     # zb_h = 0.3 - 0.01875 * (x - 10.0) **2
     # return torch.where((x > 6.0) & (x < 14.0), zb_h, zb)
 
-def bed_elevation_soft_condition(x: torch.Tensor) -> torch.Tensor:
+def bed_elevation_synthetic(x: torch.Tensor) -> torch.Tensor:
+    zb = torch.zeros_like(x)
+    zb_h = 0.1 - (0.025) * (x - 11.0) **2
+    return torch.where((x > 9.0) & (x < 13.0), zb_h, zb)
+
+def bed_elevation_softer_condition(x: torch.Tensor) -> torch.Tensor:
     factor = torch.ones_like(x) * 1.0
-    factor_h = torch.ones_like(x) * 0.7
+    factor_h = torch.ones_like(x) * 0.77
     return torch.where((x > 8.0) & (x < 12.0), factor_h, factor)
 
 def set_eta_q(case=6):
@@ -212,16 +220,15 @@ def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred
     """
     Simple outflow boundary conditions
     """
-
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
     loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
-    return loss_bc_left  + loss_bc_right
+    return loss_bc_left + loss_bc_right
+
 
 c0 = np.sqrt(g * eta_val)
 # Generate training data
 # Collocation points
 #x_collocation = torch.rand(int(num_collocation_points), 1) * (x_max - x_min) + x_min
-
 
 # Enhanced training data sampling
 # Much denser sampling near bump
