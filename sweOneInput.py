@@ -106,7 +106,7 @@ def improved_physics_loss(h, u, x):
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     zb = bed_elevation_synthetic(x)
 
-    soft_factor = bed_elevation_softer_condition(x)
+    #soft_factor = bed_elevation_softer_condition(x)
 
     #friction slope
     # manning = 0.0
@@ -135,7 +135,7 @@ def improved_physics_loss(h, u, x):
     #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
 
-    momentum_residual = flux_x + soft_factor * g * h * dzb_dx #+ g * h * sfx
+    momentum_residual = flux_x + g * h * dzb_dx #+ g * h * sfx
 
     # Discontinuity detector: total gradient magnitude
     if gradient_based_weighting == True:
