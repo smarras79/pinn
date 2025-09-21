@@ -116,9 +116,9 @@ def improved_physics_loss(h, u, x):
     bump_mask = ((x > 8.0) & (x < 12.0)).float()
     #outside_bump_mask = 1.0 - bump_mask
     q_loss = torch.mean((q * bump_mask.float() - q_val)**2)
-    q_loss = torch.mean((q - q_val)**2)
+    #q_loss = torch.mean((q - q_val)**2)
 
-    #compute h at bump and enforce it to be more than bump height
+    #compute h at bump and enforce it to be more than bump height in bump region
     h_threshold_bump_region = bump_mask * bed_elevation(x)
     h_threshold_bump_region_mask = (h > h_threshold_bump_region).float()
 
@@ -355,7 +355,8 @@ with torch.no_grad():
     ax1.set_ylim(0, eta_val * 2.0)
     
     # Velocity
-    ax2.plot(x_np, u_pred_plot, 'g-', label='PINN u(x,t)', linewidth=2)
+    ax2.plot(x_np, u_pred_plot, 'b-', label='PINN u(x,t)', linewidth=2)
+    ax2.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
     #ax2.plot(x_np, u_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
     #ax2.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
     ax2.set_ylabel('Velocity u(x,t) [m/s]')
