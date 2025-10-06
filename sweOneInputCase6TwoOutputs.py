@@ -136,6 +136,12 @@ class ImprovedPINN_SWE(nn.Module):
         violation = u_zeroes - u_pred
         penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
         return self.loss_func(penalty, torch.zeros_like(penalty))
+    
+    def constraint_height_loss_after_hydraulic_jump(self, h_pred):
+        violation = h_bc_left() - h_pred 
+        penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
+        return self.loss_func(penalty, torch.zeros_like(penalty))
+
 
     # def constraint_height_loss_after_bump(self, x_bump, h_pred):
     #     violation = h_bc_right() - h_pred 
@@ -382,6 +388,14 @@ def train():
         # h_collocation_after_bump, u_collocation_after_bump = model(x_after_bump_collocation)
         # loss_constraint_height_after_bump = model.constraint_height_loss_after_bump(x_after_bump_collocation,h_collocation_after_bump)
         
+        # Hydraulic jump detection and height constraint
+        Fr = u_collocation / torch.sqrt(g * h_collocation)
+        fr_critical_mask = (Fr > 1.0).float()
+        h_collocation_fr_critical_region = fr_critical_mask * h_collocation
+        loss_constraint_height_after_hydraulic_jump = model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical_region)
+        #Fr_plot = Fr.numpy().flatten()
+
+
         # explicit q constraint — helps enforce constant discharge
         # q = h_collocation * u_collocation
         # q_loss = torch.mean((q - q_val)**2)
@@ -393,6 +407,7 @@ def train():
         loss_constraint_weight = 50 
         loss_constraint_before_bump_weight = 1 #100 #200
         loss_constraint_velocity_weight = 50 
+        loss_constraint_height_after_hydraulic_jump_weight = 1
         # loss_constraint_before_bump_weight = 1
         loss = (
             lambda_pde_curr * loss_pde
@@ -400,6 +415,7 @@ def train():
             + loss_constraint_weight * loss_constraint
             + loss_constraint_velocity_weight * loss_constraint_velocity
             + loss_constraint_before_bump_weight * loss_constraint_height_before_bump
+            + loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump
             # + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
             # + loss_constraint_before_bump_weight * loss_constraint_height_after_bump
         )
@@ -454,6 +470,11 @@ def test(loss,start_time):
         zb_plot = bed_elevation(x_plot)
         eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
         x_np = x_plot.detach().numpy().flatten()
+
+        # Compure Froude number
+        Fr = u_pred / torch.sqrt(g * h_pred)
+        Fr_plot = Fr.numpy().flatten()
+
         
         # Get analytical solution
         #h_exact, u_exact = exact_dam_break_solution(x_np, t_np)
@@ -469,6 +490,7 @@ def test(loss,start_time):
         ax1.plot(x_np, h_pred_plot, 'b-', label='PINN h(x,t)', linewidth=2)
         #ax1.plot(x_np, eta_plot, 'm--', label='Free surface η = h + zb', linewidth=2)
         ax1.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
+        #ax1.plot(x_np, Fr_plot, 'm-', label='Froude number', linewidth=1.5)
         #ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
         #ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
         ax1.set_ylabel('Water Height h(x,t) [m]')
