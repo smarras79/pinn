@@ -138,10 +138,14 @@ class ImprovedPINN_SWE(nn.Module):
         return self.loss_func(penalty, torch.zeros_like(penalty))
     
     def constraint_height_loss_after_hydraulic_jump(self, h_pred):
-        violation = h_bc_left() - h_pred 
+        violation = eta_right() - h_pred 
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
         return self.loss_func(penalty, torch.zeros_like(penalty))
 
+    def constraint_velocity_loss_after_hydraulic_jump(self, u_pred):
+        violation = u_pred - u_bc_right() # u_pred should not be higher than u_bc_right
+        penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
+        return self.loss_func(penalty, torch.zeros_like(penalty))
 
     # def constraint_height_loss_after_bump(self, x_bump, h_pred):
     #     violation = h_bc_right() - h_pred 
@@ -374,7 +378,7 @@ def train():
         h_collocation_bump, u_collocation_bump = model(x_bump_collocation)
         loss_constraint = model.constraint_loss(x_bump_collocation,h_collocation_bump)
 
-        # Velocity contraint loss in full domain
+        # Velocity contraint loss in full domain. velocity should not get negative.
         loss_constraint_velocity = model.constraint_loss_velocity(u_zeroes,u_collocation)
 
         # Height Constraint loss in "before bump region". Height should not be below eta_val
@@ -390,10 +394,12 @@ def train():
         
         # Hydraulic jump detection and height constraint
         Fr = u_collocation / torch.sqrt(g * h_collocation)
-        fr_critical_mask = (Fr > 1.0).float()
+        fr_critical_mask = (Fr > 1.1).float()
         h_collocation_fr_critical_region = fr_critical_mask * h_collocation
         loss_constraint_height_after_hydraulic_jump = model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical_region)
-        #Fr_plot = Fr.numpy().flatten()
+        
+        u_collocation_fr_critical_region = fr_critical_mask * u_collocation
+        loss_constraint_velocity_after_hydraulic_jump = model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical_region)
 
 
         # explicit q constraint — helps enforce constant discharge
@@ -403,11 +409,12 @@ def train():
         lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
 
         # Total loss
-        lambda_bc_curr = 1 #20 #100
-        loss_constraint_weight = 50 
+        lambda_bc_curr = 1 
+        loss_constraint_weight = 50 #50
         loss_constraint_before_bump_weight = 1 #100 #200
-        loss_constraint_velocity_weight = 50 
+        loss_constraint_velocity_weight = 50 #50
         loss_constraint_height_after_hydraulic_jump_weight = 1
+        loss_constraint_velocity_after_hydraulic_jump_weight = 1
         # loss_constraint_before_bump_weight = 1
         loss = (
             lambda_pde_curr * loss_pde
@@ -416,6 +423,7 @@ def train():
             + loss_constraint_velocity_weight * loss_constraint_velocity
             + loss_constraint_before_bump_weight * loss_constraint_height_before_bump
             + loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump
+            + loss_constraint_velocity_after_hydraulic_jump_weight * loss_constraint_velocity_after_hydraulic_jump
             # + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
             # + loss_constraint_before_bump_weight * loss_constraint_height_after_bump
         )
