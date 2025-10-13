@@ -60,6 +60,7 @@ loss_constraint_velocity_history = []
 loss_constraint_height_before_bump_history = []
 loss_constraint_height_after_hydraulic_jump_history = []
 loss_constraint_velocity_after_hydraulic_jump_history = []
+x_collocation_fr_critical_max_history = []
 
 def get_weights(epoch, total_epochs):
     # start with strong BC enforcement, gradually relax
@@ -502,7 +503,7 @@ def train():
 
     # Training loop - Refinement
     print("Refinement training loop")
-    epochsRefinement = 1000
+    epochsRefinement = 2000
     for epoch in range(epochsRefinement):
         optimizer.zero_grad()
         # Boundary loss
@@ -521,7 +522,7 @@ def train():
         # Hydraulic jump detection and height constraint
         epsilon = 1e-3
         Fr = u_collocation_bump / torch.sqrt(g * torch.clamp(h_collocation_bump, min=epsilon))
-        fr_critical_mask = (Fr >= 1.0).float()
+        fr_critical_mask = (Fr >= 0.8).float()
         x_collocation_fr_critical = fr_critical_mask * x_bump_collocation
         h_collocation_fr_critical, u_collocation_fr_critical = model(x_collocation_fr_critical)
         #h_collocation_fr_critical_region = fr_critical_mask * h_collocation_bump
@@ -533,9 +534,13 @@ def train():
         model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical,
                                                                 h_collocation_fr_critical)
 
-        lossrefinement = loss_boundary + 10 * loss_pde + 50 * loss_constraint \
+        lossrefinement = (
+            10 * loss_pde \
+            # + loss_boundary \
+            + 50 * loss_constraint \
             + 10 * loss_constraint_height_after_hydraulic_jump \
             + 10 * loss_constraint_velocity_after_hydraulic_jump
+        )
         
         lossrefinement.backward()
         
@@ -552,7 +557,25 @@ def train():
             print(f"  Continuity: {pde_components['continuity']:.4e}")
             print(f"  Momentum: {pde_components['momentum']:.4e}")
             print(f"  Bump Height penetration Loss: {loss_constraint.item():.4e}")
+            x_collocation_fr_critical_max_history.append(torch.max(x_collocation_fr_critical))
 
+        if epoch==epochsRefinement-1:
+            with open("x_collocation_fr_critical.txt", "w") as file:
+                for row in x_collocation_fr_critical.unbind(0):
+                    file.write(str(row.item()))
+                    file.write("\n")
+            with open("x_collocation_fr_critical_max_history.txt", "w") as file:
+                for row in x_collocation_fr_critical_max_history:
+                    file.write(str(row.item()))
+                    file.write("\n")
+
+    print(x_collocation_fr_critical_max_history)
+
+    for row in x_collocation_fr_critical_max_history:
+        print(str(row.item()))
+
+    print(f"x_collocation_fr_critical_max: {max(x_collocation_fr_critical_max_history):.4e}")
+    
     elapsed_time = time.time() - start_time
     print(f"Training completed in {elapsed_time:.2f} seconds.")
     return loss
@@ -616,7 +639,7 @@ def test(loss,start_time):
         # Velocity
         ax2.plot(x_np, u_pred_plot, 'b-', label='PINN u(x,t)', linewidth=2)
         ax2.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
-        ax2.plot(x_np, q_val / h_pred_plot, 'm-', label='Derived u(x,t)', linewidth=2)
+        #ax2.plot(x_np, q_val / h_pred_plot, 'm-', label='Derived u(x,t)', linewidth=2)
         #ax2.plot(x_np, u_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
         ax2.set_ylabel('Velocity u(x,t) [m/s]')
         ax2.set_title(f'Velocity')
