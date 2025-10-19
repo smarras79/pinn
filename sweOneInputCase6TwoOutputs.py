@@ -30,21 +30,17 @@ eta_val = 0.33
 q_val = 0.18
 
 #Bump Region
-x_bump_left = 8.0 #8.0
-x_bump_center = 10.0 #20.0
-x_bump_right = 12.0 #22.0
+x_bump_left = 8.0
+x_bump_center = 10.0
+x_bump_right = 12.0
 bump_height = 0.2
 bump_width = 4
 
 #Bump left region
 x_before_bump_left = 0
-x_before_bump_right = 8 #8
+x_before_bump_right = 8
 
-#Bump Right region
-# x_after_bump_left = 11
-# x_after_bump_right = 15 #8
-
-gradient_based_weighting = False
+gradient_based_weighting = True
 
 # Output directory
 output_dir = "swe/temp/swe_oneInput_2outputs_case6_" + str(epochs)
@@ -62,17 +58,6 @@ loss_constraint_height_after_hydraulic_jump_history = []
 loss_constraint_velocity_after_hydraulic_jump_history = []
 x_collocation_fr_critical_max_history = []
 
-def get_weights(epoch, total_epochs):
-    # start with strong BC enforcement, gradually relax
-    # bc_weight = 500.0 if epoch < 1000 else 50.0
-    # pde_weight = 100.0
-    # return pde_weight, bc_weight
-    return 1,1
-
-# def get_weights_pde(epoch, total_epochs):
-#     continuity_loss_weight = 5.0 if epoch < 2000 else 0.0
-#     momentum_loss_weight = 1.0 if epoch < 2000 else 2.0
-#     return continuity_loss_weight, momentum_loss_weight
 
 class ImprovedPINN_SWE(nn.Module):
     """
@@ -137,7 +122,6 @@ class ImprovedPINN_SWE(nn.Module):
         violation = u_pred - u_bc_left() # ideally u_pred should be less than u_bc_left(velocity goes down)
         penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
         return self.loss_func(penalty, torch.zeros_like(penalty))
-        #return torch.mean((u_pred - u_bc_left())**2)
     
     def constraint_loss_velocity(self, u_zeroes, u_pred):
         violation = u_zeroes - u_pred
@@ -153,26 +137,11 @@ class ImprovedPINN_SWE(nn.Module):
         violation = h_pred - eta_right()
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
         return self.loss_func(penalty, torch.zeros_like(penalty))
-        #return torch.mean((eta_right() - h_pred)**2)
-
 
     def constraint_velocity_loss_after_hydraulic_jump(self,u_pred,h_pred):
-        #q = torch.tensor([[q_val]])
-        #violation = u_bc_right() - (q / h_pred.clamp(min=1e-3)) # u_pred should not be higher than u_bc_right
         violation = u_pred - u_bc_right() # u_pred should not be higher than u_bc_right
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
         return self.loss_func(penalty, torch.zeros_like(penalty))
-        #return torch.mean((u_pred - u_bc_right())**2)
-
-    # def constraint_height_loss_after_bump(self, x_bump, h_pred):
-    #     violation = h_bc_right() - h_pred 
-    #     penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
-    #     return self.loss_func(penalty, torch.zeros_like(penalty))
-
-    # def constraint_velocity_loss_after_bump(self, x_bump, u_pred):
-    #     violation = u_bc_right() - u_pred 
-    #     penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
-    #     return self.loss_func(penalty, torch.zeros_like(penalty))
 
 
 # Instantiate the network
@@ -196,58 +165,32 @@ def improved_physics_loss(h, u, x, epoch,epochs):
     flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
     h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
-    #zb = bed_elevation_synthetic(x)
     zb = bed_elevation(x)
-
-    #soft_factor = bed_elevation_softer_condition(x)
 
     #friction slope
     # manning = 0.0
     # sfx = manning**2 * u * torch.abs(u) / h.clamp(min=1e-3)**(4.0/3.0)
 
-    # explicit q constraint — helps enforce constant discharge
-    # bump_mask = ((x > 8.0) & (x < 12.0)).float()
-    # outside_bump_mask = 1.0 - bump_mask
-    # q_loss_bump_region = torch.mean((q * bump_mask.float() - q_val)**2)
-    # q_loss = torch.mean((q * outside_bump_mask.float() - q_val)**2)
-
-    #compute h at bump and enforce it to be more than bump height in bump region
-    # h_threshold_bump_region = bump_mask * bed_elevation(x)
-    # h_threshold_bump_region_mask = (h > h_threshold_bump_region).float()
-
-    # gaussian_distribution = torch.exp(-(x-10)**2)/2
-    # gaussian_distribution_bump_mask = bump_mask * gaussian_distribution
-
     # Steady continuity residual: ∂(hu)/∂x = 0
     continuity_residual = hu_x
-    #continuity_residual = outside_bump_mask * hu_x
-    #continuity_residual_bump_region = bump_mask * h_threshold_bump_region_mask * hu_x
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
-    #epsilon = 1e-6 #Avoids large or exploding gradients when h → 0 (common near wet-dry interfaces or sharp dam fronts)
     dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
 
     bed_momentum = g * h * dzb_dx
     momentum_residual = flux_x + bed_momentum #+ g * h * sfx
 
     # Discontinuity detector: total gradient magnitude
-    # if gradient_based_weighting == True:
-    #     grad_strength = torch.abs(h_x) + torch.abs(u_x)
-    #     # Gradient-based weighting: reduce loss impact where solution is steep
-    #     weight_map = 1.0 / (1.0 + 0.8 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
-    #     #bump_loss_weight = torch.exp(-grad_strength * bump_mask.float())
-    #     #combined_weight = bump_loss_weight * weight_map
-    #     combined_weight = weight_map * torch.exp(-grad_strength * bump_mask.float())
-
+    if gradient_based_weighting == True:
+        grad_strength = torch.abs(h_x) + torch.abs(u_x)
+        # Gradient-based weighting: reduce loss impact where solution is steep
+        weight_map = 1.0 / (1.0 + 0.8 * grad_strength.detach()) #best results with multiplier value of 0.5. Keep it in this range [0.1, 1.0]
 
     if gradient_based_weighting == True:
         # Weighted PDE residuals
-        #continuity_loss_bump_region = torch.mean( continuity_residual_bump_region**2)
-        continuity_loss = torch.mean( continuity_residual**2)
-        #momentum_loss_bump_region = torch.mean( h_threshold_bump_region_mask * momentum_residual**2)
-        momentum_loss = torch.mean( momentum_residual**2)
-        #momentum_loss = torch.mean( outside_bump_mask * momentum_residual**2)
+        continuity_loss = torch.mean( weight_map * continuity_residual**2)
+        momentum_loss = torch.mean( weight_map * momentum_residual**2)
     else:
         continuity_loss = torch.mean(continuity_residual**2)
         momentum_loss = torch.mean(momentum_residual**2)
@@ -257,21 +200,10 @@ def improved_physics_loss(h, u, x, epoch,epochs):
 
     # Combine total PDE loss
     total_pde_loss = continuity_loss + momentum_loss 
-        #+ momentum_loss_bump_region \
-        #+ q_loss \
-        #+ q_loss_bump_region
-
-    # total_pde_loss = continuity_loss_bump_region \
-    #     + continuity_loss \
-    #     + momentum_loss \
-    #     + momentum_loss_bump_region \
-    #     + q_loss \
-    #     + q_loss_bump_region
 
     return total_pde_loss, {
         'continuity': continuity_loss.item(),
         'momentum': momentum_loss.item()
-        #'q_loss': q_loss.item
     }
 
 # ------------------ Bed Elevation Function ------------------
@@ -280,16 +212,6 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     zb = torch.zeros_like(x)
     zb_h = bump_height - (bump_height/bump_width) * (x - x_bump_center) **2
     return torch.where((x > x_bump_left) & (x < x_bump_right), zb_h, zb)
-
-# def bed_elevation_synthetic(x: torch.Tensor) -> torch.Tensor:
-#     zb = torch.zeros_like(x)
-#     zb_h = 0.2 - (0.2/4.0) * (x - 11.0) **2
-#     return torch.where((x > 9.0) & (x < 13.0), zb_h, zb)
-
-# def bed_elevation_softer_condition(x: torch.Tensor) -> torch.Tensor:
-#     factor = torch.ones_like(x) * 1.0
-#     factor_h = torch.ones_like(x) * 0.77
-#     return torch.where((x > 8.0) & (x < 12.0), factor_h, factor)
 
 def set_eta_q(case=6):
     if case == 6:
@@ -325,36 +247,20 @@ def u_bc_right():
     return u
 
 def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
-    """
-    Simple outflow boundary conditions
-    """
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
-    #loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
-    return  (loss_bc_left) #  +  loss_bc_right)
+    return  (loss_bc_left)
 
 def boundary_condition_loss_right_side(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
-    """
-    Simple outflow boundary conditions
-    """
     loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
     return  loss_bc_right
 
 def boundary_condition_loss_both_side(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
-    """
-    Simple outflow boundary conditions
-    """
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
     loss_bc_right = torch.mean((h_right_pred - h_bc_right())**2) + torch.mean((u_right_pred - u_bc_right())**2)
     return  (loss_bc_left +  loss_bc_right)
 
-
 def train():
-    # Generate training data
-    # Collocation points
-    #x_collocation = torch.rand(int(num_collocation_points), 1) * (x_max - x_min) + x_min
-
-    # Enhanced training data sampling
-    # Much denser sampling near bump
+    # Generate training data. Enhanced training data sampling. Much denser sampling near bump
     x_bump_region = torch.linspace(x_bump_left, x_bump_right, num_collocation_points // 3)
     x_outer_left = torch.linspace(x_min, x_bump_left, num_collocation_points // 3)
     x_outer_right = torch.linspace(x_bump_right, x_max, num_collocation_points // 3)
@@ -370,9 +276,6 @@ def train():
     # Bump before points
     x_before_bump_collocation = torch.cat([torch.linspace(x_before_bump_left, x_before_bump_right, num_collocation_points)]).reshape(-1, 1)
 
-    # Bump after points
-    # x_after_bump_collocation = torch.cat([torch.linspace(x_after_bump_left, x_after_bump_right, num_collocation_points)]).reshape(-1, 1)
-
     u_zeroes = torch.zeros(num_collocation_points, 1)
 
     # Set requires_grad
@@ -381,7 +284,6 @@ def train():
     x_boundary_right.requires_grad_(True)
     x_bump_collocation.requires_grad_(True)
     x_before_bump_collocation.requires_grad_(True)
-    # x_after_bump_collocation.requires_grad_(True)
 
     print(f"Domain: x ∈ [{x_min}, {x_max}]")
 
@@ -426,58 +328,20 @@ def train():
         loss_constraint_velocity_before_bump = \
             model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
 
-        # Height Constraint loss in "after bump region"
-        # h_collocation_after_bump, u_collocation_after_bump = model(x_after_bump_collocation)
-        # loss_constraint_height_after_bump = model.constraint_height_loss_after_bump(x_after_bump_collocation,h_collocation_after_bump)
-        
-        # Hydraulic jump detection and height constraint
-        # epsilon = 1e-3
-        # Fr = u_collocation / torch.sqrt(g * torch.clamp(h_collocation, min=epsilon))
-        # fr_critical_mask = (Fr > 1.0).float()
-        # h_collocation_fr_critical_region = fr_critical_mask * h_collocation
-        # loss_constraint_height_after_hydraulic_jump = \
-        #     model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical_region)
-        
-        # u_collocation_fr_critical_region = fr_critical_mask * u_collocation
-        # loss_constraint_velocity_after_hydraulic_jump = \
-        #     model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical_region,
-        #                                                         h_collocation_fr_critical_region)
-
-        #loss_constraint_height_after_hydraulic_jump_high_side = model.constraint_height_loss_after_hydraulic_jump_high_side(h_collocation_fr_critical_region)
-
-        #flatness before bump
-        # h_x = torch.autograd.grad(h_collocation_before_bump, x_before_bump_collocation, grad_outputs=torch.ones_like(h_collocation_before_bump), create_graph=True, retain_graph=True)[0]
-        # h_xx = torch.autograd.grad(h_x, x_before_bump_collocation, grad_outputs=torch.ones_like(h_x), create_graph=True, retain_graph=True)[0]
-        # loss_flatness_before_bump = torch.mean(h_xx**2)
-
-        # explicit q constraint — helps enforce constant discharge
-        # q = h_collocation * u_collocation
-        # q_loss = torch.mean((q - q_val)**2)
-
-        #lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
-        lambda_pde_curr = 1
-        lambda_bc_curr = 1
 
         # Total loss
-        loss_constraint_weight = 10 #50 In Bump: Height should not penetrate the bump
-        loss_constraint_before_bump_weight = 1 #100 #200 Before bump: Height should not be below eta_val
-        loss_constraint_velocity_weight = 1 #50 Full domain: Velocity should not get negative
-        # loss_constraint_height_after_hydraulic_jump_weight = 1 #After bump: Height should not be below eta_val
-        # loss_constraint_velocity_after_hydraulic_jump_weight = 1 #After bump: Velocity should not be less than u_bc_right
-        #loss_flatness_before_bump_weight = 1
+        pde_weight = 1
+        bc_weight = 1
+        loss_constraint_weight = 10 #In Bump: Height should not penetrate the bump
+        loss_constraint_before_bump_weight = 1 #Before bump: Height should not be below eta_val
+        loss_constraint_velocity_weight = 1 #Full domain: Velocity should not get negative
         loss = (
-            lambda_pde_curr * loss_pde
-            + lambda_bc_curr * loss_boundary
-            # + 0.5 * q_loss
+            pde_weight * loss_pde
+            + bc_weight * loss_boundary
             + loss_constraint_weight * loss_constraint
             + loss_constraint_velocity_weight * loss_constraint_velocity
             + loss_constraint_before_bump_weight * loss_constraint_height_before_bump
             + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
-            # + loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump
-            # + loss_constraint_velocity_after_hydraulic_jump_weight * loss_constraint_velocity_after_hydraulic_jump
-            #+ loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump_high_side
-            #+ loss_flatness_before_bump_weight * loss_flatness_before_bump
-            # + loss_constraint_before_bump_weight * loss_constraint_height_after_bump
         )
 
         loss.backward()
@@ -492,12 +356,8 @@ def train():
         pde_loss_history.append(loss_pde.item())
         continuity_loss_history.append(pde_components['continuity'])
         momentum_loss_history.append(pde_components['momentum'])
-        #q_loss_history.append(pde_components['q_loss'])
         loss_constraint_history.append(loss_constraint.item())
         loss_constraint_velocity_history.append(loss_constraint_velocity.item())
-        #loss_constraint_height_before_bump_history.append(loss_constraint_height_before_bump.item())
-        # loss_constraint_height_after_hydraulic_jump_history.append(loss_constraint_height_after_hydraulic_jump.item())
-        # loss_constraint_velocity_after_hydraulic_jump_history.append(loss_constraint_velocity_after_hydraulic_jump.item())
         
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochs}")
@@ -506,17 +366,10 @@ def train():
             print(f"  Boundary Loss: {loss_boundary.item():.4e}")
             print(f"  Continuity: {pde_components['continuity']:.4e}")
             print(f"  Momentum: {pde_components['momentum']:.4e}")
-            #print(f"  Discharge(q_loss): {pde_components['q_loss']:.4e}")
             print(f"  loss_constraint: {loss_constraint.item():.4e}")
             print(f"  loss_constraint_velocity: {loss_constraint_velocity.item():.4e}")
-            #print(f"  loss_constraint_height_before_bump: {loss_constraint_height_before_bump.item():.4e}")
-            # print(f"  loss_constraint_height_after_hydraulic_jump: {loss_constraint_height_after_hydraulic_jump.item():.4e}")
-            # print(f"  loss_constraint_velocity_after_hydraulic_jump: {loss_constraint_velocity_after_hydraulic_jump.item():.4e}")
             print(f"  Froude number: {torch.max(Fr):.4e}")
             print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
-        
-        # if epoch==epochs-1:
-        #     logdata2(h_collocation_fr_critical_region,u_collocation_fr_critical_region)
     #End of Training loop
 
     # Training loop - Refinement
@@ -544,24 +397,11 @@ def train():
         # Hydraulic jump detection and height constraint
         epsilon = 1e-3
         Fr = u_collocation_bump / torch.sqrt(g * torch.clamp(h_collocation_bump, min=epsilon))
-        # fr_critical_mask = (Fr >= 0.8).float()
-        # x_collocation_fr_critical = fr_critical_mask * x_bump_collocation
-        # h_collocation_fr_critical, u_collocation_fr_critical = model(x_collocation_fr_critical)
-        # #h_collocation_fr_critical_region = fr_critical_mask * h_collocation_bump
-        # loss_constraint_height_after_hydraulic_jump = \
-        #     model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical)
-        
-        # # u_collocation_fr_critical_region = fr_critical_mask * u_collocation_bump
-        # loss_constraint_velocity_after_hydraulic_jump = \
-        # model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical,
-        #                                                         h_collocation_fr_critical)
 
         lossrefinement = (
             loss_pde \
             + loss_boundary \
             + 5 * loss_constraint \
-            # + 10 * loss_constraint_height_after_hydraulic_jump \
-            # + 10 * loss_constraint_velocity_after_hydraulic_jump
         )
         
         lossrefinement.backward()
@@ -580,36 +420,11 @@ def train():
             print(f"  Momentum: {pde_components['momentum']:.4e}")
             print(f"  Bump Height penetration Loss: {loss_constraint.item():.4e}")
             print(f"  Froude number: {torch.max(Fr):.4e}")
-            #x_collocation_fr_critical_max_history.append(torch.max(x_collocation_fr_critical))
-
-        # if epoch==epochsRefinement-1:
-        #     with open("x_collocation_fr_critical.txt", "w") as file:
-        #         for row in x_collocation_fr_critical.unbind(0):
-        #             file.write(str(row.item()))
-        #             file.write("\n")
-        #     with open("x_collocation_fr_critical_max_history.txt", "w") as file:
-        #         for row in x_collocation_fr_critical_max_history:
-        #             file.write(str(row.item()))
-        #             file.write("\n")
-
-        # if epoch==epochsRefinement-1:
-        #     epsilon = 1e-3
-        #     Fr = u_collocation_bump / torch.sqrt(g * torch.clamp(h_collocation_bump, min=epsilon))
-        #     fr_critical_mask = (Fr >= 1.0).float()
-        #     x_collocation_fr_critical = fr_critical_mask * x_collocation
-
     #End of Training loop - Refinement
-    # print(x_collocation_fr_critical_max_history)
 
-    # for row in x_collocation_fr_critical_max_history:
-    #     print(str(row.item()))
-
-    # print(f"x_collocation_fr_critical_max: {max(x_collocation_fr_critical_max_history):.4e}")
-    
     elapsed_time = time.time() - start_time
     print(f"Training completed in {elapsed_time:.2f} seconds.")
     return loss
-
 
 
 def test(loss,start_time):
@@ -641,10 +456,6 @@ def test(loss,start_time):
         fr_critical_mask = (Fr > 1.0).float()
         fr_critical_mask_plot = fr_critical_mask.numpy().flatten()
 
-        
-        # Get analytical solution
-        #h_exact, u_exact = exact_dam_break_solution(x_np, t_np)
-        
         # Calculate errors
         # h_error = np.abs(h_pred_plot - h_exact)
         # u_error = np.abs(u_pred_plot - u_exact)
@@ -805,17 +616,6 @@ def test(loss,start_time):
     print(f"\nSolution images saved in '{output_dir}'")
     torch.save(model.state_dict(), os.path.join(output_dir, 'curriculum_swe_pinn_model.pth'))
     print("Model saved successfully!")
-
-def logdata2(h_collocation_fr_critical_region,u_collocation_fr_critical_region):
-    with open("h_collocation_fr_critical_region.txt", "w") as file:
-        for row in h_collocation_fr_critical_region.unbind(0):
-            file.write(str(row.item()))
-            file.write("\n")
-    with open("u_collocation_fr_critical_region.txt", "w") as file:
-        for row in u_collocation_fr_critical_region.unbind(0):
-            file.write(str(row.item()))
-            file.write("\n")
-
 
 def logdata(x,h,u,q,hu_x,flux_x,bed_momentum):
     with open("x.txt", "w") as file:
