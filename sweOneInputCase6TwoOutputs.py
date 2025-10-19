@@ -38,7 +38,7 @@ bump_width = 4
 
 #Bump left region
 x_before_bump_left = 0
-x_before_bump_right = 10 #8
+x_before_bump_right = 8 #8
 
 #Bump Right region
 # x_after_bump_left = 11
@@ -134,10 +134,10 @@ class ImprovedPINN_SWE(nn.Module):
         return self.loss_func(penalty, torch.zeros_like(penalty))
 
     def constraint_velocity_loss_before_bump(self, x_bump, u_pred):
-        #violation = u_pred - u_bc_left() # ideally u_pred should be less than u_bc_left(velocity goes down)
-        #penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
-        #return self.loss_func(penalty, torch.zeros_like(penalty))
-        return torch.mean((u_pred - u_bc_left())**2)
+        violation = u_pred - u_bc_left() # ideally u_pred should be less than u_bc_left(velocity goes down)
+        penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
+        return self.loss_func(penalty, torch.zeros_like(penalty))
+        #return torch.mean((u_pred - u_bc_left())**2)
     
     def constraint_loss_velocity(self, u_zeroes, u_pred):
         violation = u_zeroes - u_pred
@@ -389,6 +389,10 @@ def train():
         
         # Physics loss
         h_collocation, u_collocation = model(x_collocation)
+
+        epsilon = 1e-3
+        Fr = u_collocation / torch.sqrt(g * torch.clamp(h_collocation, min=epsilon))
+
         loss_pde, pde_components = improved_physics_loss(h_collocation, u_collocation, 
                                                         x_collocation,epoch,epochs)
     
@@ -407,27 +411,29 @@ def train():
 
         # Height Constraint loss in "before bump region". Height should not be below eta_val
         h_collocation_before_bump, u_collocation_before_bump = model(x_before_bump_collocation)
-        loss_constraint_height_before_bump = model.constraint_height_loss_before_bump(x_before_bump_collocation,h_collocation_before_bump)
+        loss_constraint_height_before_bump = \
+            model.constraint_height_loss_before_bump(x_before_bump_collocation,h_collocation_before_bump)
 
         # Velocity Constraint loss in "before bump region".
-        # loss_constraint_velocity_before_bump = model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
+        loss_constraint_velocity_before_bump = \
+            model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
 
         # Height Constraint loss in "after bump region"
         # h_collocation_after_bump, u_collocation_after_bump = model(x_after_bump_collocation)
         # loss_constraint_height_after_bump = model.constraint_height_loss_after_bump(x_after_bump_collocation,h_collocation_after_bump)
         
         # Hydraulic jump detection and height constraint
-        epsilon = 1e-3
-        Fr = u_collocation / torch.sqrt(g * torch.clamp(h_collocation, min=epsilon))
-        fr_critical_mask = (Fr > 1.0).float()
-        h_collocation_fr_critical_region = fr_critical_mask * h_collocation
-        loss_constraint_height_after_hydraulic_jump = \
-            model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical_region)
+        # epsilon = 1e-3
+        # Fr = u_collocation / torch.sqrt(g * torch.clamp(h_collocation, min=epsilon))
+        # fr_critical_mask = (Fr > 1.0).float()
+        # h_collocation_fr_critical_region = fr_critical_mask * h_collocation
+        # loss_constraint_height_after_hydraulic_jump = \
+        #     model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical_region)
         
-        u_collocation_fr_critical_region = fr_critical_mask * u_collocation
-        loss_constraint_velocity_after_hydraulic_jump = \
-            model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical_region,
-                                                                h_collocation_fr_critical_region)
+        # u_collocation_fr_critical_region = fr_critical_mask * u_collocation
+        # loss_constraint_velocity_after_hydraulic_jump = \
+        #     model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical_region,
+        #                                                         h_collocation_fr_critical_region)
 
         #loss_constraint_height_after_hydraulic_jump_high_side = model.constraint_height_loss_after_hydraulic_jump_high_side(h_collocation_fr_critical_region)
 
@@ -440,26 +446,29 @@ def train():
         # q = h_collocation * u_collocation
         # q_loss = torch.mean((q - q_val)**2)
 
-        lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
+        #lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
+        lambda_pde_curr = 1
+        lambda_bc_curr = 1
 
         # Total loss
-        loss_constraint_weight = 50 #50 In Bump: Height should not penetrate the bump
+        loss_constraint_weight = 10 #50 In Bump: Height should not penetrate the bump
         loss_constraint_before_bump_weight = 1 #100 #200 Before bump: Height should not be below eta_val
         loss_constraint_velocity_weight = 1 #50 Full domain: Velocity should not get negative
-        loss_constraint_height_after_hydraulic_jump_weight = 1 #After bump: Height should not be below eta_val
-        loss_constraint_velocity_after_hydraulic_jump_weight = 1 #After bump: Velocity should not be less than u_bc_right
+        # loss_constraint_height_after_hydraulic_jump_weight = 1 #After bump: Height should not be below eta_val
+        # loss_constraint_velocity_after_hydraulic_jump_weight = 1 #After bump: Velocity should not be less than u_bc_right
         #loss_flatness_before_bump_weight = 1
         loss = (
             lambda_pde_curr * loss_pde
             + lambda_bc_curr * loss_boundary
+            # + 0.5 * q_loss
             + loss_constraint_weight * loss_constraint
             + loss_constraint_velocity_weight * loss_constraint_velocity
             + loss_constraint_before_bump_weight * loss_constraint_height_before_bump
-            + loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump
-            + loss_constraint_velocity_after_hydraulic_jump_weight * loss_constraint_velocity_after_hydraulic_jump
+            + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
+            # + loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump
+            # + loss_constraint_velocity_after_hydraulic_jump_weight * loss_constraint_velocity_after_hydraulic_jump
             #+ loss_constraint_height_after_hydraulic_jump_weight * loss_constraint_height_after_hydraulic_jump_high_side
             #+ loss_flatness_before_bump_weight * loss_flatness_before_bump
-            # + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
             # + loss_constraint_before_bump_weight * loss_constraint_height_after_bump
         )
 
@@ -479,8 +488,8 @@ def train():
         loss_constraint_history.append(loss_constraint.item())
         loss_constraint_velocity_history.append(loss_constraint_velocity.item())
         #loss_constraint_height_before_bump_history.append(loss_constraint_height_before_bump.item())
-        loss_constraint_height_after_hydraulic_jump_history.append(loss_constraint_height_after_hydraulic_jump.item())
-        loss_constraint_velocity_after_hydraulic_jump_history.append(loss_constraint_velocity_after_hydraulic_jump.item())
+        # loss_constraint_height_after_hydraulic_jump_history.append(loss_constraint_height_after_hydraulic_jump.item())
+        # loss_constraint_velocity_after_hydraulic_jump_history.append(loss_constraint_velocity_after_hydraulic_jump.item())
         
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochs}")
@@ -493,17 +502,18 @@ def train():
             print(f"  loss_constraint: {loss_constraint.item():.4e}")
             print(f"  loss_constraint_velocity: {loss_constraint_velocity.item():.4e}")
             #print(f"  loss_constraint_height_before_bump: {loss_constraint_height_before_bump.item():.4e}")
-            print(f"  loss_constraint_height_after_hydraulic_jump: {loss_constraint_height_after_hydraulic_jump.item():.4e}")
-            print(f"  loss_constraint_velocity_after_hydraulic_jump: {loss_constraint_velocity_after_hydraulic_jump.item():.4e}")
+            # print(f"  loss_constraint_height_after_hydraulic_jump: {loss_constraint_height_after_hydraulic_jump.item():.4e}")
+            # print(f"  loss_constraint_velocity_after_hydraulic_jump: {loss_constraint_velocity_after_hydraulic_jump.item():.4e}")
             print(f"  Froude number: {torch.max(Fr):.4e}")
             print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
         
-        if epoch==epochs-1:
-            logdata2(h_collocation_fr_critical_region,u_collocation_fr_critical_region)
+        # if epoch==epochs-1:
+        #     logdata2(h_collocation_fr_critical_region,u_collocation_fr_critical_region)
+    #End of Training loop
 
     # Training loop - Refinement
-    print("Refinement training loop")
-    epochsRefinement = 2000
+    print("Refinement training loop in bump region")
+    epochsRefinement = 4000
     for epoch in range(epochsRefinement):
         optimizer.zero_grad()
         # Boundary loss
@@ -522,24 +532,24 @@ def train():
         # Hydraulic jump detection and height constraint
         epsilon = 1e-3
         Fr = u_collocation_bump / torch.sqrt(g * torch.clamp(h_collocation_bump, min=epsilon))
-        fr_critical_mask = (Fr >= 0.8).float()
-        x_collocation_fr_critical = fr_critical_mask * x_bump_collocation
-        h_collocation_fr_critical, u_collocation_fr_critical = model(x_collocation_fr_critical)
-        #h_collocation_fr_critical_region = fr_critical_mask * h_collocation_bump
-        loss_constraint_height_after_hydraulic_jump = \
-            model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical)
+        # fr_critical_mask = (Fr >= 0.8).float()
+        # x_collocation_fr_critical = fr_critical_mask * x_bump_collocation
+        # h_collocation_fr_critical, u_collocation_fr_critical = model(x_collocation_fr_critical)
+        # #h_collocation_fr_critical_region = fr_critical_mask * h_collocation_bump
+        # loss_constraint_height_after_hydraulic_jump = \
+        #     model.constraint_height_loss_after_hydraulic_jump(h_collocation_fr_critical)
         
-        # u_collocation_fr_critical_region = fr_critical_mask * u_collocation_bump
-        loss_constraint_velocity_after_hydraulic_jump = \
-        model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical,
-                                                                h_collocation_fr_critical)
+        # # u_collocation_fr_critical_region = fr_critical_mask * u_collocation_bump
+        # loss_constraint_velocity_after_hydraulic_jump = \
+        # model.constraint_velocity_loss_after_hydraulic_jump(u_collocation_fr_critical,
+        #                                                         h_collocation_fr_critical)
 
         lossrefinement = (
-            10 * loss_pde \
-            # + loss_boundary \
-            + 50 * loss_constraint \
-            + 10 * loss_constraint_height_after_hydraulic_jump \
-            + 10 * loss_constraint_velocity_after_hydraulic_jump
+            loss_pde \
+            + loss_boundary \
+            + 5 * loss_constraint \
+            # + 10 * loss_constraint_height_after_hydraulic_jump \
+            # + 10 * loss_constraint_velocity_after_hydraulic_jump
         )
         
         lossrefinement.backward()
@@ -557,25 +567,230 @@ def train():
             print(f"  Continuity: {pde_components['continuity']:.4e}")
             print(f"  Momentum: {pde_components['momentum']:.4e}")
             print(f"  Bump Height penetration Loss: {loss_constraint.item():.4e}")
-            x_collocation_fr_critical_max_history.append(torch.max(x_collocation_fr_critical))
+            print(f"  Froude number: {torch.max(Fr):.4e}")
+            #x_collocation_fr_critical_max_history.append(torch.max(x_collocation_fr_critical))
 
-        if epoch==epochsRefinement-1:
-            with open("x_collocation_fr_critical.txt", "w") as file:
-                for row in x_collocation_fr_critical.unbind(0):
-                    file.write(str(row.item()))
-                    file.write("\n")
-            with open("x_collocation_fr_critical_max_history.txt", "w") as file:
-                for row in x_collocation_fr_critical_max_history:
-                    file.write(str(row.item()))
-                    file.write("\n")
+        # if epoch==epochsRefinement-1:
+        #     with open("x_collocation_fr_critical.txt", "w") as file:
+        #         for row in x_collocation_fr_critical.unbind(0):
+        #             file.write(str(row.item()))
+        #             file.write("\n")
+        #     with open("x_collocation_fr_critical_max_history.txt", "w") as file:
+        #         for row in x_collocation_fr_critical_max_history:
+        #             file.write(str(row.item()))
+        #             file.write("\n")
 
-    print(x_collocation_fr_critical_max_history)
+        # if epoch==epochsRefinement-1:
+        #     epsilon = 1e-3
+        #     Fr = u_collocation_bump / torch.sqrt(g * torch.clamp(h_collocation_bump, min=epsilon))
+        #     fr_critical_mask = (Fr >= 1.0).float()
+        #     x_collocation_fr_critical = fr_critical_mask * x_collocation
 
-    for row in x_collocation_fr_critical_max_history:
-        print(str(row.item()))
+    #End of Training loop - Refinement
+    # print(x_collocation_fr_critical_max_history)
 
-    print(f"x_collocation_fr_critical_max: {max(x_collocation_fr_critical_max_history):.4e}")
+    # for row in x_collocation_fr_critical_max_history:
+    #     print(str(row.item()))
+
+    # print(f"x_collocation_fr_critical_max: {max(x_collocation_fr_critical_max_history):.4e}")
     
+    # Hydraulic jump detection and height constraint
+    # h_collocation, u_collocation = model(x_collocation)
+    # epsilon = 1e-3
+    # Fr = u_collocation / torch.sqrt(g * torch.clamp(h_collocation, min=epsilon))
+    # fr_critical_mask = (Fr > 1.0).float()
+    # x_collocation_fr_critical = fr_critical_mask * x_collocation
+    # h_collocation_fr_critical, u_collocation_fr_critical = model(x_collocation_fr_critical)
+    # h_collocation_fr_critical_region = fr_critical_mask * h_collocation
+
+    fr_critical_mask = (Fr > 1.0).float()
+    x_collocation_fr_critical = fr_critical_mask * x_collocation
+    x_collocation_fr_critical = x_collocation_fr_critical[x_collocation_fr_critical>1]
+    #mask_positive = x_collocation_fr_critical > 0.1
+    #x_collocation_fr_critical = x_collocation_fr_critical[mask_positive]
+    #x_collocation_fr_critical = (x_collocation_fr_critical>1.0)
+    x_hydraulic_jump_left = torch.min(x_collocation_fr_critical)
+    x_hydraulic_jump_right = torch.max(x_collocation_fr_critical)
+    print(f"x_hydraulic_jump_left: {x_hydraulic_jump_left}")
+    print(f"x_hydraulic_jump_right: {x_hydraulic_jump_right}")
+
+    with open("Froude.txt", "w") as file:
+        for row in Fr.unbind(0):
+            file.write(str(row.item()))
+            file.write("\n")
+    with open("x_collocation_fr_critical.txt", "w") as file:
+        for row in x_collocation_fr_critical.unbind(0):
+            file.write(str(row.item()))
+            file.write("\n")
+
+
+    # After hydraulic jump points
+    x_after_hydraulic_jump_collocation = torch.cat([torch.linspace(x_hydraulic_jump_left, x_hydraulic_jump_right, num_collocation_points)]).reshape(-1, 1)
+    x_after_hydraulic_jump_collocation.requires_grad_(True)
+    # Training loop - Post hydraulic jump region refinement
+    print("Post hydraulic jump region refinement loop")
+    epochsRefinement = 0
+    for epoch in range(epochsRefinement):
+        optimizer.zero_grad()
+        # Boundary loss
+        h_boundary_left, u_boundary_left = model(x_boundary_left)
+        h_boundary_right, u_boundary_right = model(x_boundary_right)
+        loss_boundary = boundary_condition_loss(h_boundary_left, u_boundary_left, 
+                                            h_boundary_right, u_boundary_right)
+
+        h_after_hydraulic_jump_collocation_bump, u_after_hydraulic_jump_collocation_bump = \
+            model(x_after_hydraulic_jump_collocation)
+        
+        epsilon = 1e-3
+        Fr = u_after_hydraulic_jump_collocation_bump / torch.sqrt(g * torch.clamp(h_after_hydraulic_jump_collocation_bump, min=epsilon))
+
+        
+        loss_pde, pde_components = improved_physics_loss(h_after_hydraulic_jump_collocation_bump, 
+                                                         u_after_hydraulic_jump_collocation_bump, 
+                                                        x_after_hydraulic_jump_collocation,epoch,epochsRefinement)
+
+        # Height contraint loss in "bump region". Height should not penetrate the bump
+        loss_constraint = model.constraint_loss(x_after_hydraulic_jump_collocation,
+                                                h_after_hydraulic_jump_collocation_bump)
+
+        loss_constraint_height_after_hydraulic_jump = \
+            model.constraint_height_loss_after_hydraulic_jump(h_after_hydraulic_jump_collocation_bump)
+        
+        loss_constraint_velocity_after_hydraulic_jump = \
+        model.constraint_velocity_loss_after_hydraulic_jump(u_after_hydraulic_jump_collocation_bump,
+                                                                h_after_hydraulic_jump_collocation_bump)
+
+        lossPostHydraulicJumpRefinement = (
+            loss_pde \
+            + loss_boundary \
+            + loss_constraint \
+            + loss_constraint_height_after_hydraulic_jump \
+            + loss_constraint_velocity_after_hydraulic_jump
+        )
+        
+        lossPostHydraulicJumpRefinement.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+
+        if (epoch + 1) % 100 == 0:
+            print(f"Epoch {epoch+1}/{epochsRefinement}")
+            print(f"  Total Loss: {lossPostHydraulicJumpRefinement.item():.4e}")
+            # print(f"  Boundary Loss: {loss_boundary.item():.4e}")
+            print(f"  PDE Loss: {loss_pde.item():.4e}")
+            print(f"  Continuity: {pde_components['continuity']:.4e}")
+            print(f"  Momentum: {pde_components['momentum']:.4e}")
+            print(f"  Bump Height penetration Loss: {loss_constraint.item():.4e}")
+            print(f"  Height post hydraulic jump Loss: {loss_constraint_height_after_hydraulic_jump.item():.4e}")
+            print(f"  Velocity post hydraulic jump Loss: {loss_constraint_velocity_after_hydraulic_jump.item():.4e}")
+            print(f"  Froude number: {torch.max(Fr):.4e}")
+    # End of Training loop - Post hydraulic jump region refinement
+
+
+    # Second Training loop over full domain
+    epochsTraining = 0
+    #scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
+    for epoch in range(epochsTraining):
+        optimizer.zero_grad()
+        
+        # Physics loss
+        h_collocation, u_collocation = model(x_collocation)
+
+        epsilon = 1e-3
+        Fr = u_collocation / torch.sqrt(g * torch.clamp(h_collocation, min=epsilon))
+
+        loss_pde, pde_components = improved_physics_loss(h_collocation, u_collocation, 
+                                                        x_collocation,epoch,epochsTraining)
+    
+        # Boundary loss
+        h_boundary_left, u_boundary_left = model(x_boundary_left)
+        h_boundary_right, u_boundary_right = model(x_boundary_right)
+        loss_boundary = boundary_condition_loss(h_boundary_left, u_boundary_left, 
+                                            h_boundary_right, u_boundary_right)
+
+        # Height contraint loss in "bump region". Height should not penetrate the bump
+        h_collocation_bump, u_collocation_bump = model(x_bump_collocation)
+        loss_constraint = model.constraint_loss(x_bump_collocation,h_collocation_bump)
+
+        # Velocity contraint loss in full domain. velocity should not get negative.
+        loss_constraint_velocity = model.constraint_loss_velocity(u_zeroes,u_collocation)
+
+        # Height Constraint loss in "before bump region". Height should not be below eta_val
+        h_collocation_before_bump, u_collocation_before_bump = model(x_before_bump_collocation)
+        loss_constraint_height_before_bump = \
+            model.constraint_height_loss_before_bump(x_before_bump_collocation,h_collocation_before_bump)
+
+        # Velocity Constraint loss in "before bump region".
+        loss_constraint_velocity_before_bump = \
+            model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
+
+        #lambda_pde_curr, lambda_bc_curr = get_weights(epoch, epochs)
+        lambda_pde_curr = 1
+        lambda_bc_curr = 1
+
+        # Total loss
+        loss_constraint_weight = 1 #50 In Bump: Height should not penetrate the bump
+        loss_constraint_before_bump_weight = 1 #100 #200 Before bump: Height should not be below eta_val
+        loss_constraint_velocity_weight = 1 #50 Full domain: Velocity should not get negative
+        # loss_constraint_height_after_hydraulic_jump_weight = 1 #After bump: Height should not be below eta_val
+        # loss_constraint_velocity_after_hydraulic_jump_weight = 1 #After bump: Velocity should not be less than u_bc_right
+        #loss_flatness_before_bump_weight = 1
+        loss = (
+            lambda_pde_curr * loss_pde
+            + lambda_bc_curr * loss_boundary
+            + loss_constraint_weight * loss_constraint
+            + loss_constraint_velocity_weight * loss_constraint_velocity
+            + loss_constraint_before_bump_weight * loss_constraint_height_before_bump
+            + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
+        )
+
+        loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        optimizer.step()
+        scheduler.step()
+        
+        if (epoch + 1) % 100 == 0:
+            print(f"Epoch {epoch+1}/{epochsTraining}")
+            print(f"  Total Loss: {loss.item():.4e}")
+            print(f"  PDE Loss: {loss_pde.item():.4e}")
+            print(f"  Boundary Loss: {loss_boundary.item():.4e}")
+            print(f"  Continuity: {pde_components['continuity']:.4e}")
+            print(f"  Momentum: {pde_components['momentum']:.4e}")
+            #print(f"  Discharge(q_loss): {pde_components['q_loss']:.4e}")
+            print(f"  loss_constraint: {loss_constraint.item():.4e}")
+            print(f"  loss_constraint_velocity: {loss_constraint_velocity.item():.4e}")
+            #print(f"  loss_constraint_height_before_bump: {loss_constraint_height_before_bump.item():.4e}")
+            # print(f"  loss_constraint_height_after_hydraulic_jump: {loss_constraint_height_after_hydraulic_jump.item():.4e}")
+            # print(f"  loss_constraint_velocity_after_hydraulic_jump: {loss_constraint_velocity_after_hydraulic_jump.item():.4e}")
+            print(f"  Froude number: {torch.max(Fr):.4e}")
+            print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
+    #End of Second Training loop over full domain
+
+
+    
+    # with open("x_collocation_fr_critical.txt", "w") as file:
+    #     for row in x_collocation_fr_critical.unbind(0):
+    #         file.write(str(row.item()))
+    #         file.write("\n")
+    # with open("h_collocation_fr_critical.txt", "w") as file:
+    #     for row in h_collocation_fr_critical.unbind(0):
+    #         file.write(str(row.item()))
+    #         file.write("\n")
+    # with open("u_collocation_fr_critical.txt", "w") as file:
+    #     for row in u_collocation_fr_critical.unbind(0):
+    #         file.write(str(row.item()))
+    #         file.write("\n")
+    # with open("Froude.txt", "w") as file:
+    #     for row in Fr.unbind(0):
+    #         file.write(str(row.item()))
+    #         file.write("\n")
+
+
     elapsed_time = time.time() - start_time
     print(f"Training completed in {elapsed_time:.2f} seconds.")
     return loss
