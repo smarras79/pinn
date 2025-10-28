@@ -19,16 +19,12 @@ L = x_max - x_min
 num_collocation_points = 6000
 num_boundary_points = 500
 epochs = 10000
-# epochsRefinement = 4000
 learning_rate = 1e-3
 num_time_steps = 20
 #Scheduler tuning parameters
 scheduler_step_size_frequency = 5 #Number of times we want scheduler to reduce LR during full training with epochs
 scheduler_step_size = epochs // scheduler_step_size_frequency # Epoch intervals at which scheduler will reduce LR 
 scheduler_gamma=0.5 #Factor by which scheduler will reduce LR at each epoch interval
-# Initial condition parameters
-eta_val = 0.33
-q_val = 0.18
 
 #Bump Region
 x_bump_left = 8.0
@@ -44,7 +40,7 @@ x_before_bump_right = 8
 gradient_based_weighting = True
 
 # Output directory
-output_dir = "swe/temp/swe_oneInput_2outputs_case6_" + str(epochs)
+output_dir = "swe/temp/swe_steady_" + str(epochs)
 os.makedirs(output_dir, exist_ok=True)
 
 dir = 'C:\\Users\\rhear\\MPAS\\PINN\\DamBreak' # HLLC Analytical solution dir path
@@ -218,6 +214,7 @@ def bed_elevation(x: torch.Tensor) -> torch.Tensor:
     return torch.where((x > x_bump_left) & (x < x_bump_right), zb_h, zb)
 
 def set_eta_q(case=6):
+    global eta_val,q_val
     if case == 6:
         eta_val, q_val = 0.33, 0.18
     elif case == 7:
@@ -250,7 +247,7 @@ def u_bc_right():
     u = q / h
     return u
 
-def boundary_condition_loss(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
+def boundary_condition_loss_left_side(h_left_pred, u_left_pred, h_right_pred, u_right_pred):
     loss_bc_left = torch.mean((h_left_pred - h_bc_left())**2) + torch.mean((u_left_pred - u_bc_left())**2)
     return  (loss_bc_left)
 
@@ -294,8 +291,8 @@ def train():
     start_time = time.time()
     model.train()
 
-    #Setting test case here. 
-    set_eta_q(6)
+    #Setting test case here. 6: supercritical. 7:subcritical
+    #set_eta_q(test_case)
 
     # Training loop
     for epoch in range(epochs):
@@ -313,7 +310,7 @@ def train():
         # Boundary loss
         h_boundary_left, u_boundary_left = model(x_boundary_left)
         h_boundary_right, u_boundary_right = model(x_boundary_right)
-        loss_boundary = boundary_condition_loss(h_boundary_left, u_boundary_left, 
+        loss_boundary = boundary_condition_loss_left_side(h_boundary_left, u_boundary_left, 
                                             h_boundary_right, u_boundary_right)
 
         # Height contraint loss in "bump region". Height should not penetrate the bump
@@ -331,7 +328,6 @@ def train():
         # Velocity Constraint loss in "before bump region".
         loss_constraint_velocity_before_bump = \
             model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
-
 
         # Total loss
         pde_weight = 1
@@ -436,11 +432,11 @@ def test(loss,start_time):
     # Generate solution plots
     #x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
     
-    #Using x from analytical graphs
-    x_plot = getxplot()
+    #Using x_plot from analytical graphs x points
+    x_plot = getxplot(test_case)
 
     #Analytical results
-    h_exact = get_analytical_results()
+    h_exact = get_analytical_results(test_case)
 
     os.chdir(dir)
 
@@ -459,7 +455,7 @@ def test(loss,start_time):
         u_pred_plot = u_pred.numpy().flatten()
         # Compute bed elevation and free surface
         zb_plot = bed_elevation(x_plot)
-        eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
+        #eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
         x_np = x_plot.detach().numpy().flatten()
 
         # Compure Froude number
@@ -470,6 +466,7 @@ def test(loss,start_time):
 
         # Calculate errors
         h_error = np.abs(h_pred_plot - h_exact)
+        h_error_ratio = np.abs(h_pred_plot - h_exact)/np.abs(h_exact)
         # u_error = np.abs(u_pred_plot - u_exact)
 
         # Create plots
@@ -482,9 +479,9 @@ def test(loss,start_time):
         #ax1.plot(x_np, Fr_plot, 'm-', label='Froude number', linewidth=1.5)
         ax1.plot(x_np, h_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
         #ax1.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5, label='Dam position')
-        ax1.set_ylabel('Water Height h(x,t) [m]')
+        ax1.set_xlabel('x [m]')
+        ax1.set_ylabel('Water Height h(x) [m]')
         ax1.set_title(f'Water Height')
-        
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         #ax1.set_ylim(0, eta_val * 1.5)
@@ -494,7 +491,8 @@ def test(loss,start_time):
         ax2.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
         #ax2.plot(x_np, q_val / h_pred_plot, 'm-', label='Derived u(x,t)', linewidth=2)
         #ax2.plot(x_np, u_exact, 'r--', label='Analytical solution', linewidth=2, alpha=0.8)
-        ax2.set_ylabel('Velocity u(x,t) [m/s]')
+        ax2.set_xlabel('x [m]')
+        ax2.set_ylabel('Velocity u(x) [m/s]')
         ax2.set_title(f'Velocity')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
@@ -503,43 +501,29 @@ def test(loss,start_time):
         ax3.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
         ax3.plot(x_np, Fr_plot, 'b-', label='Froude number', linewidth=1.5)
         ax3.plot(x_np, fr_critical_mask_plot, 'r-', label='Froude number mask', linewidth=1.5)
+        ax3.set_xlabel('x [m]')
         ax3.set_ylabel('Froude number')
         ax3.set_title(f'Froude number')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
 
         # Plot height error
-        ax4.plot(x_np, h_error, 'r-', linewidth=1.5)
+        ax4.plot(x_np, h_error, 'r-', label='h_pred - h_exact', linewidth=1.5)
+        ax4.plot(x_np, h_error_ratio, 'b-', label = '(h_pred - h_exact)/h_exact', linewidth=1.5)
         #ax4.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
+        ax4.set_xlabel('x [m]')
         ax4.set_ylabel('|h_pred - h_exact|')
         ax4.set_title(f'Height Error - Max: {np.max(h_error):.4f}')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
-        ax4.set_yscale('log')
+        #ax4.set_yscale('log')
 
-
-        # Height error
-        #ax3.semilogy(x_np, np.maximum(h_error, 1e-10), 'r-', linewidth=2)
-        #ax3.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5)
-        #ax3.set_ylabel('|h_pred - h_exact|')
-        #ax3.set_title(f'Height Error - Max: {np.max(h_error):.4f}')
-        #ax3.grid(True, alpha=0.3)
-        
-        # Velocity error
-        #ax4.semilogy(x_np, np.maximum(u_error, 1e-10), 'g-', linewidth=2)
-        #ax4.axvline(x=dam_position, color='k', linestyle=':', alpha=0.5)
-        #ax4.set_xlabel('Position x [m]')
-        #ax4.set_ylabel('|u_pred - u_exact|')
-        #ax4.set_title(f'Velocity Error - Max: {np.max(u_error):.4f}')
-        #ax4.grid(True, alpha=0.3)
-        
         plt.tight_layout()
         
         # Add information text
         info_text = f"Epochs: {epochs} | Points: {num_collocation_points}\n"
         info_text += f"Training time: {elapsed_time:.1f}s | Final loss: {loss.item():.4e}"
         plt.figtext(0.5, 0.0, info_text, ha='center', fontsize=9)
-        
         plt.savefig(os.path.join(output_dir, f"swe_solution.png"), dpi=150, bbox_inches='tight')
         plt.close()
 
@@ -674,10 +658,14 @@ def logdata(x,h,u,q,hu_x,flux_x,bed_momentum):
             file.write(str(row.item()))
             file.write("\n")
 
-def get_analytical_results():
+def get_analytical_results(case=6):
     os.chdir(dire)
-    eta = np.loadtxt('eta_supercritical.dat')
-    print("loaded supercritical!")
+    if case==6:
+        eta = np.loadtxt('eta_supercritical.dat')
+    if case==7:
+        eta = np.loadtxt('eta_subcritical.dat')
+    print("loaded analytical results!")
+
     m=50 #In HLLC simulation 51st record is the last time snapshot state of eta 
     return eta[m, :]
 
@@ -708,15 +696,6 @@ def plot_analytical():
     plt.xlabel('x (m)')
     plt.ylabel('z (m)')
     plt.grid()
-    # for i in range(m):
-    #     plt.plot(x, zb, 'g--', linewidth=1.5)
-    #     plt.title(f"Free surface evolution")
-    #     plt.plot(x, eta[i, :], 'b-', linewidth=1.5)
-    #     plt.ylim([0, eta_up])
-    #     plt.xlim([x[0], xf])
-    #     plt.xlabel('x (m)')
-    #     plt.ylabel('z (m)')
-    #     plt.grid()
     plt.savefig(os.path.join(dire, 'hllc_solution_subcritical.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
@@ -745,30 +724,27 @@ def plot_analytical():
     plt.xlabel('x (m)')
     plt.ylabel('z (m)')
     plt.grid()
-    # for i in range(m):
-    #     plt.plot(x, zb, 'g--', linewidth=1.5)
-    #     plt.title(f"Free surface evolution")
-    #     plt.plot(x, eta[i, :], 'b-', linewidth=1.5)
-    #     plt.ylim([0, eta_up])
-    #     plt.xlim([x[0], xf])
-    #     plt.xlabel('x (m)')
-    #     plt.ylabel('z (m)')
-    #     plt.grid()
     plt.savefig(os.path.join(dire, 'hllc_solution_supercritical.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
-def getxplot():
+def getxplot(case):
     os.chdir(dire)
-    ic = np.loadtxt('Slope_test_supercritical.ic')
+    if case==6:
+        ic = np.loadtxt('Slope_test_supercritical.ic')
+    if case==7:
+        ic = np.loadtxt('Slope_test_subcritical.ic')
     x = ic[:, 0]
     x1 = np.float32(x)
     return torch.from_numpy(x1).view(-1, 1)
 
 def main():
     start_time = time.time()
+    global test_case #supercritical:6 subcritical:7
+    test_case = 7
+    set_eta_q(test_case)
     loss = train()
     test(loss,start_time)
-    plot_analytical()
+    #plot_analytical()
 
 if __name__=="__main__":
     main()
