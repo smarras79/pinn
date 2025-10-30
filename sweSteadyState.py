@@ -358,7 +358,17 @@ def train():
         momentum_loss_history.append(pde_components['momentum'])
         loss_constraint_history.append(loss_constraint.item())
         loss_constraint_velocity_history.append(loss_constraint_velocity.item())
-        
+
+        # optional: add small parameter noise to escape local minima
+        # if (epoch + 1) % 200 == 0 and epoch > 0:
+        #     with torch.no_grad():
+        #         for p in model.parameters():
+        #             p.add_(1e-5 * torch.randn_like(p))
+
+        if (epoch + 1) % 200 == 0 and epoch > 0:
+            for p in model.parameters():
+                p.grad += 1e-6 * torch.randn_like(p.grad)  # smaller magnitude for stability
+
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochs}")
             print(f"  Total Loss: {loss.item():.4e}")
@@ -410,6 +420,10 @@ def train():
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
+
+        if (epoch + 1) % 200 == 0 and epoch > 0:
+            for p in model.parameters():
+                p.grad += 1e-6 * torch.randn_like(p.grad)  # smaller magnitude for stability
 
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochsRefinement}")
