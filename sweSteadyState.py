@@ -67,18 +67,21 @@ class ImprovedPINN_SWE(nn.Module):
         super(ImprovedPINN_SWE, self).__init__()
 
         # Input layer
-        self.input_layer = nn.Linear(1, 128)  
+        self.input_layer = nn.Linear(1, 512)  
 
         # Hidden layers
         self.hidden_layers = nn.ModuleList()  
-        self.hidden_layers.append(nn.Linear(128, 128))    
+        self.hidden_layers.append(nn.Linear(512, 256))    
+        self.hidden_layers.append(nn.Linear(256, 128))
         self.hidden_layers.append(nn.Linear(128, 64))
         self.hidden_layers.append(nn.Linear(64, 32))
         self.hidden_layers.append(nn.Linear(32, 16))
+        self.hidden_layers.append(nn.Linear(16, 8))
+        self.hidden_layers.append(nn.Linear(8, 4))
 
         # Output layers for the two results
-        self.output_h = nn.Linear(16, 1)
-        self.output_u = nn.Linear(16, 1)
+        self.output_h = nn.Linear(4, 1)
+        self.output_u = nn.Linear(4, 1)
 
         # Activation function
         self.activation = nn.Tanh()
@@ -291,9 +294,6 @@ def train():
     start_time = time.time()
     model.train()
 
-    #Setting test case here. 6: supercritical. 7:subcritical
-    #set_eta_q(test_case)
-
     # Training loop
     for epoch in range(epochs):
         optimizer.zero_grad()
@@ -310,24 +310,24 @@ def train():
         # Boundary loss
         h_boundary_left, u_boundary_left = model(x_boundary_left)
         h_boundary_right, u_boundary_right = model(x_boundary_right)
-        loss_boundary = boundary_condition_loss_left_side(h_boundary_left, u_boundary_left, 
+        loss_boundary = boundary_condition_loss_both_side(h_boundary_left, u_boundary_left, 
                                             h_boundary_right, u_boundary_right)
 
         # Height contraint loss in "bump region". Height should not penetrate the bump
-        h_collocation_bump, u_collocation_bump = model(x_bump_collocation)
-        loss_constraint = model.constraint_loss(x_bump_collocation,h_collocation_bump)
+        #h_collocation_bump, u_collocation_bump = model(x_bump_collocation)
+        #loss_constraint = model.constraint_loss(x_bump_collocation,h_collocation_bump)
 
         # Velocity contraint loss in full domain. velocity should not get negative.
-        loss_constraint_velocity = model.constraint_loss_velocity(u_zeroes,u_collocation)
+        #loss_constraint_velocity = model.constraint_loss_velocity(u_zeroes,u_collocation)
 
         # Height Constraint loss in "before bump region". Height should not be below eta_val
-        h_collocation_before_bump, u_collocation_before_bump = model(x_before_bump_collocation)
-        loss_constraint_height_before_bump = \
-            model.constraint_height_loss_before_bump(x_before_bump_collocation,h_collocation_before_bump)
+        #h_collocation_before_bump, u_collocation_before_bump = model(x_before_bump_collocation)
+        #loss_constraint_height_before_bump = \
+            #model.constraint_height_loss_before_bump(x_before_bump_collocation,h_collocation_before_bump)
 
         # Velocity Constraint loss in "before bump region".
-        loss_constraint_velocity_before_bump = \
-            model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
+        #loss_constraint_velocity_before_bump = \
+            #model.constraint_velocity_loss_before_bump(x_before_bump_collocation,u_collocation_before_bump)
 
         # Total loss
         pde_weight = 1
@@ -338,10 +338,10 @@ def train():
         loss = (
             pde_weight * loss_pde
             + bc_weight * loss_boundary
-            + loss_constraint_weight * loss_constraint
-            + loss_constraint_velocity_weight * loss_constraint_velocity
-            + loss_constraint_before_bump_weight * loss_constraint_height_before_bump
-            + loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
+            #+ loss_constraint_weight * loss_constraint
+            #+ loss_constraint_velocity_weight * loss_constraint_velocity
+            #+ loss_constraint_before_bump_weight * loss_constraint_height_before_bump
+            #+ loss_constraint_before_bump_weight * loss_constraint_velocity_before_bump
         )
 
         loss.backward()
@@ -356,8 +356,8 @@ def train():
         pde_loss_history.append(loss_pde.item())
         continuity_loss_history.append(pde_components['continuity'])
         momentum_loss_history.append(pde_components['momentum'])
-        loss_constraint_history.append(loss_constraint.item())
-        loss_constraint_velocity_history.append(loss_constraint_velocity.item())
+        #loss_constraint_history.append(loss_constraint.item())
+        #loss_constraint_velocity_history.append(loss_constraint_velocity.item())
 
         # optional: add small parameter noise to escape local minima
         # if (epoch + 1) % 200 == 0 and epoch > 0:
@@ -365,9 +365,9 @@ def train():
         #         for p in model.parameters():
         #             p.add_(1e-5 * torch.randn_like(p))
 
-        if (epoch + 1) % 200 == 0 and epoch > 0:
-            for p in model.parameters():
-                p.grad += 1e-6 * torch.randn_like(p.grad)  # smaller magnitude for stability
+        #if (epoch + 1) % 200 == 0 and epoch > 0:
+        #    for p in model.parameters():
+        #        p.grad += 1e-6 * torch.randn_like(p.grad)  # smaller magnitude for stability
 
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochs}")
@@ -376,8 +376,8 @@ def train():
             print(f"  Boundary Loss: {loss_boundary.item():.4e}")
             print(f"  Continuity: {pde_components['continuity']:.4e}")
             print(f"  Momentum: {pde_components['momentum']:.4e}")
-            print(f"  loss_constraint: {loss_constraint.item():.4e}")
-            print(f"  loss_constraint_velocity: {loss_constraint_velocity.item():.4e}")
+            #print(f"  loss_constraint: {loss_constraint.item():.4e}")
+            #print(f"  loss_constraint_velocity: {loss_constraint_velocity.item():.4e}")
             print(f"  Froude number: {torch.max(Fr):.4e}")
             print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.2e}")
     #End of Training loop
@@ -387,7 +387,7 @@ def train():
     # Bump region surrounding points
     x_around_bump_collocation = torch.cat([torch.linspace(x_bump_left-2, x_bump_right+2, num_collocation_points)]).reshape(-1, 1)
     x_around_bump_collocation.requires_grad_(True)
-    epochsRefinement = 4000
+    epochsRefinement = 0
     for epoch in range(epochsRefinement):
         optimizer.zero_grad()
         # Boundary loss
@@ -523,11 +523,11 @@ def test(loss,start_time):
 
         # Plot height error
         ax4.plot(x_np, h_error, 'r-', label='h_pred - h_exact', linewidth=1.5)
-        ax4.plot(x_np, h_error_ratio, 'b-', label = '(h_pred - h_exact)/h_exact', linewidth=1.5)
+        #ax4.plot(x_np, h_error_ratio, 'b-', label = '(h_pred - h_exact)/h_exact', linewidth=1.5)
         #ax4.plot(x_np, zb_plot, 'g--', label='Bottom topography zb(x)', linewidth=1.5)
         ax4.set_xlabel('x [m]')
         ax4.set_ylabel('|h_pred - h_exact|')
-        ax4.set_title(f'Height Error - Max: {np.max(h_error):.4f}')
+        ax4.set_title(f'Height Error - Max: {np.max(h_error):.4f}, Mean: {np.mean(h_error**2):.4f}')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
         #ax4.set_yscale('log')
