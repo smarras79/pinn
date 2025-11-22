@@ -1,15 +1,16 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 import torch 
 import torch.nn as nn
 import torch.optim as optim
 import math
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 import time
+# Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 # Set the environment variable
-os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
@@ -149,8 +150,7 @@ class ImprovedPINN_SWE(nn.Module):
 
 
 # Instantiate the network
-model = ImprovedPINN_SWE()
-model.to(device)
+model = ImprovedPINN_SWE().to(device)
 # Optimizer with scheduled learning rate
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
@@ -165,9 +165,13 @@ def improved_physics_loss(h, u, x, epoch,epochs):
     pressure = 0.5 * g * h**2
 
     # Compute derivatives
+    ones_q = torch.ones_like(q, device=q.device)
     hu_x = torch.autograd.grad(q, x, grad_outputs=torch.ones_like(q), create_graph=True)[0]
+    ones_hu2 = torch.ones_like(hu2, device=hu2.device)
     flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
+    ones_h = torch.ones_like(h, device=h.device)
     h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    ones_u = torch.ones_like(u, device=u.device)
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     zb = bed_elevation(x)
 
@@ -180,7 +184,7 @@ def improved_physics_loss(h, u, x, epoch,epochs):
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
-    dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
+    dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb, device=zb.device), create_graph=True)[0]
 
     bed_momentum = g * h * dzb_dx
     momentum_residual = flux_x + bed_momentum #+ g * h * sfx
@@ -213,7 +217,7 @@ def improved_physics_loss(h, u, x, epoch,epochs):
 # ------------------ Bed Elevation Function ------------------
 
 def bed_elevation(x: torch.Tensor) -> torch.Tensor:
-    zb = torch.zeros_like(x, device=device)
+    zb = torch.zeros_like(x, device=x.device)
     zb_h = bump_height - (bump_height/bump_width) * (x - x_bump_center) **2
     return torch.where((x > x_bump_left) & (x < x_bump_right), zb_h, zb)
 
@@ -266,23 +270,23 @@ def boundary_condition_loss_both_side(h_left_pred, u_left_pred, h_right_pred, u_
 
 def train():
     # Generate training data. Enhanced training data sampling. Much denser sampling near bump
-    x_bump_region = torch.linspace(x_bump_left, x_bump_right, num_collocation_points // 3)
-    x_outer_left = torch.linspace(x_min, x_bump_left, num_collocation_points // 3)
-    x_outer_right = torch.linspace(x_bump_right, x_max, num_collocation_points // 3)
+    x_bump_region = torch.linspace(x_bump_left, x_bump_right, num_collocation_points // 3, device=device)
+    x_outer_left = torch.linspace(x_min, x_bump_left, num_collocation_points // 3, device=device)
+    x_outer_right = torch.linspace(x_bump_right, x_max, num_collocation_points // 3, device=device)
     x_collocation = torch.cat([x_outer_left, x_bump_region, x_outer_right]).reshape(-1, 1)
     
     # Boundary points
-    x_boundary_left = torch.ones(num_boundary_points, 1) * x_min
-    x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
+    x_boundary_left = torch.ones(num_boundary_points, 1, device=device) * x_min
+    x_boundary_right = torch.ones(num_boundary_points, 1, device=device) * x_max
 
     # Bump region points
-    x_bump_collocation = torch.cat([torch.linspace(x_bump_left, x_bump_right, num_collocation_points)]).reshape(-1, 1)
+    x_bump_collocation = torch.cat([torch.linspace(x_bump_left, x_bump_right, num_collocation_points, device=device)]).reshape(-1, 1)
 
     # Bump before points
-    x_before_bump_collocation = torch.cat([torch.linspace(x_before_bump_left, x_before_bump_right, num_collocation_points)]).reshape(-1, 1)
+    x_before_bump_collocation = torch.cat([torch.linspace(x_before_bump_left, x_before_bump_right, num_collocation_points, device=device)]).reshape(-1, 1)
 
     # Move tensors to the GPU
-    u_zeroes = torch.zeros(num_collocation_points, 1)
+    u_zeroes = torch.zeros(num_collocation_points, 1, device=device)
     x_collocation = x_collocation.to(device)
     x_boundary_left = x_boundary_left.to(device)
     x_boundary_right = x_boundary_right.to(device)
@@ -393,8 +397,7 @@ def train():
     # Training loop - Refinement
     print("Refinement training loop in bump region")
     # Bump region surrounding points
-    x_around_bump_collocation = torch.cat([torch.linspace(x_bump_left-2, x_bump_right+2, num_collocation_points)]).reshape(-1, 1)
-    x_around_bump_collocation = x_around_bump_collocation.to(device)
+    x_around_bump_collocation = torch.cat([torch.linspace(x_bump_left-2, x_bump_right+2, num_collocation_points, device=device)]).reshape(-1, 1)
     x_around_bump_collocation.requires_grad_(True)
     epochsRefinement = 0
     for epoch in range(epochsRefinement):
