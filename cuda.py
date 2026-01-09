@@ -1,14 +1,16 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 import torch 
 import torch.nn as nn
 import torch.optim as optim
 import math
 import matplotlib.pyplot as plt
 import numpy as np
-import os
 import time
-
+# Device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 # Set the environment variable
-os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
 
 # Parameters for Shallow Water Equations
 g = 9.81        # Gravitational acceleration (m/s^2)
@@ -67,17 +69,17 @@ class ImprovedPINN_SWE(nn.Module):
         super(ImprovedPINN_SWE, self).__init__()
 
         # Input layer
-        self.input_layer = nn.Linear(1, 512)  
+        self.input_layer = nn.Linear(1, 506)  
 
         # Hidden layers
         self.hidden_layers = nn.ModuleList()  
-        self.hidden_layers.append(nn.Linear(512, 256))    
-        self.hidden_layers.append(nn.Linear(256, 128))
-        self.hidden_layers.append(nn.Linear(128, 64))
-        self.hidden_layers.append(nn.Linear(64, 32))
-        self.hidden_layers.append(nn.Linear(32, 16))
-        self.hidden_layers.append(nn.Linear(16, 8))
-        self.hidden_layers.append(nn.Linear(8, 4))
+        self.hidden_layers.append(nn.Linear(506, 238))    
+        self.hidden_layers.append(nn.Linear(238, 108))
+        self.hidden_layers.append(nn.Linear(108, 52))
+        self.hidden_layers.append(nn.Linear(52, 28))
+        self.hidden_layers.append(nn.Linear(28, 12))
+        self.hidden_layers.append(nn.Linear(12, 4))
+    
 
         # Output layers for the two results
         self.output_h = nn.Linear(4, 1)
@@ -114,42 +116,41 @@ class ImprovedPINN_SWE(nn.Module):
         zb_val = bed_elevation(x_bump)
         violation = zb_val - h_pred # The penalty is applied only when h_pred is less than zb_val
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
 
     def constraint_height_loss_before_bump(self, x_bump, h_pred):
         violation = h_bc_left() - h_pred # ideally h_pred should be more than h_bc_left (height goes up)
         penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
 
     def constraint_velocity_loss_before_bump(self, x_bump, u_pred):
         violation = u_pred - u_bc_left() # ideally u_pred should be less than u_bc_left(velocity goes down)
         penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
     
     def constraint_loss_velocity(self, u_zeroes, u_pred):
         violation = u_zeroes - u_pred
         penalty = torch.clamp(violation, min=0) # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
     
     def constraint_height_loss_after_hydraulic_jump(self, h_pred):
         violation = eta_right() - h_pred 
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
 
     def constraint_height_loss_after_hydraulic_jump_high_side(self, h_pred):
         violation = h_pred - eta_right()
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
 
     def constraint_velocity_loss_after_hydraulic_jump(self,u_pred,h_pred):
         violation = u_pred - u_bc_right() # u_pred should not be higher than u_bc_right
         penalty = torch.clamp(violation, min=0)     # Use torch.clamp to penalize only positive violations
-        return self.loss_func(penalty, torch.zeros_like(penalty))
+        return self.loss_func(penalty, torch.zeros_like(penalty, device=device))
 
 
 # Instantiate the network
-model = ImprovedPINN_SWE()
-
+model = ImprovedPINN_SWE().to(device)
 # Optimizer with scheduled learning rate
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = optim.lr_scheduler.StepLR(optimizer, scheduler_step_size, scheduler_gamma)
@@ -164,9 +165,13 @@ def improved_physics_loss(h, u, x, epoch,epochs):
     pressure = 0.5 * g * h**2
 
     # Compute derivatives
+    ones_q = torch.ones_like(q, device=q.device)
     hu_x = torch.autograd.grad(q, x, grad_outputs=torch.ones_like(q), create_graph=True)[0]
+    ones_hu2 = torch.ones_like(hu2, device=hu2.device)
     flux_x = torch.autograd.grad(hu2 + pressure, x, grad_outputs=torch.ones_like(hu2), create_graph=True)[0]
+    ones_h = torch.ones_like(h, device=h.device)
     h_x = torch.autograd.grad(h, x, grad_outputs=torch.ones_like(h), create_graph=True)[0]
+    ones_u = torch.ones_like(u, device=u.device)
     u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
     zb = bed_elevation(x)
 
@@ -179,7 +184,7 @@ def improved_physics_loss(h, u, x, epoch,epochs):
 
     # Momentum residual: ∂u/∂t + u∂u/∂x + g∂h/∂x = 0 (only in wet regions)
     # Change the momentum residual to include the bed slope ∂zb/∂x
-    dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb), create_graph=True)[0]
+    dzb_dx = torch.autograd.grad(zb, x, grad_outputs=torch.ones_like(zb, device=zb.device), create_graph=True)[0]
 
     bed_momentum = g * h * dzb_dx
     momentum_residual = flux_x + bed_momentum #+ g * h * sfx
@@ -212,7 +217,7 @@ def improved_physics_loss(h, u, x, epoch,epochs):
 # ------------------ Bed Elevation Function ------------------
 
 def bed_elevation(x: torch.Tensor) -> torch.Tensor:
-    zb = torch.zeros_like(x)
+    zb = torch.zeros_like(x, device=x.device)
     zb_h = bump_height - (bump_height/bump_width) * (x - x_bump_center) **2
     return torch.where((x > x_bump_left) & (x < x_bump_right), zb_h, zb)
 
@@ -227,26 +232,26 @@ def set_eta_q(case=6):
 
 # ------------------ Boundary Conditions ------------------
 def eta_left():
-    return torch.tensor([[eta_val]], dtype=torch.float32)
+    return torch.tensor([[eta_val]], dtype=torch.float32, device=device)
 
 def eta_right():
-    return torch.tensor([[eta_val]], dtype=torch.float32)
+    return torch.tensor([[eta_val]], dtype=torch.float32, device=device)
 
 def h_bc_left():
-    return eta_val - bed_elevation(torch.tensor([[x_min]]))
+    return eta_val - bed_elevation(torch.tensor([[x_min]], device=device))
 
 def h_bc_right():
-    return eta_val - bed_elevation(torch.tensor([[x_max]]))
+    return eta_val - bed_elevation(torch.tensor([[x_max]], device=device))
 
 def u_bc_left():
     h = eta_left()
-    q = torch.tensor([[q_val]])
+    q = torch.tensor([[q_val]], device=device)
     u = q / h
     return u
 
 def u_bc_right():
     h = eta_right()
-    q = torch.tensor([[q_val]])
+    q = torch.tensor([[q_val]], device=device)
     u = q / h
     return u
 
@@ -265,22 +270,29 @@ def boundary_condition_loss_both_side(h_left_pred, u_left_pred, h_right_pred, u_
 
 def train():
     # Generate training data. Enhanced training data sampling. Much denser sampling near bump
-    x_bump_region = torch.linspace(x_bump_left, x_bump_right, num_collocation_points // 3)
-    x_outer_left = torch.linspace(x_min, x_bump_left, num_collocation_points // 3)
-    x_outer_right = torch.linspace(x_bump_right, x_max, num_collocation_points // 3)
+    x_bump_region = torch.linspace(x_bump_left, x_bump_right, num_collocation_points // 3, device=device)
+    x_outer_left = torch.linspace(x_min, x_bump_left, num_collocation_points // 3, device=device)
+    x_outer_right = torch.linspace(x_bump_right, x_max, num_collocation_points // 3, device=device)
     x_collocation = torch.cat([x_outer_left, x_bump_region, x_outer_right]).reshape(-1, 1)
     
     # Boundary points
-    x_boundary_left = torch.ones(num_boundary_points, 1) * x_min
-    x_boundary_right = torch.ones(num_boundary_points, 1) * x_max
+    x_boundary_left = torch.ones(num_boundary_points, 1, device=device) * x_min
+    x_boundary_right = torch.ones(num_boundary_points, 1, device=device) * x_max
 
     # Bump region points
-    x_bump_collocation = torch.cat([torch.linspace(x_bump_left, x_bump_right, num_collocation_points)]).reshape(-1, 1)
+    x_bump_collocation = torch.cat([torch.linspace(x_bump_left, x_bump_right, num_collocation_points, device=device)]).reshape(-1, 1)
 
     # Bump before points
-    x_before_bump_collocation = torch.cat([torch.linspace(x_before_bump_left, x_before_bump_right, num_collocation_points)]).reshape(-1, 1)
+    x_before_bump_collocation = torch.cat([torch.linspace(x_before_bump_left, x_before_bump_right, num_collocation_points, device=device)]).reshape(-1, 1)
 
-    u_zeroes = torch.zeros(num_collocation_points, 1)
+    # Move tensors to the GPU
+    u_zeroes = torch.zeros(num_collocation_points, 1, device=device)
+    x_collocation = x_collocation.to(device)
+    x_boundary_left = x_boundary_left.to(device)
+    x_boundary_right = x_boundary_right.to(device)
+    x_bump_collocation = x_bump_collocation.to(device)
+    x_before_bump_collocation = x_before_bump_collocation.to(device)
+    u_zeroes = u_zeroes.to(device)
 
     # Set requires_grad
     x_collocation.requires_grad_(True)
@@ -385,7 +397,7 @@ def train():
     # Training loop - Refinement
     print("Refinement training loop in bump region")
     # Bump region surrounding points
-    x_around_bump_collocation = torch.cat([torch.linspace(x_bump_left-2, x_bump_right+2, num_collocation_points)]).reshape(-1, 1)
+    x_around_bump_collocation = torch.cat([torch.linspace(x_bump_left-2, x_bump_right+2, num_collocation_points, device=device)]).reshape(-1, 1)
     x_around_bump_collocation.requires_grad_(True)
     epochsRefinement = 0
     for epoch in range(epochsRefinement):
@@ -423,7 +435,7 @@ def train():
 
         if (epoch + 1) % 200 == 0 and epoch > 0:
             for p in model.parameters():
-                p.grad += 1e-6 * torch.randn_like(p.grad)  # smaller magnitude for stability
+                p.grad += 1e-6 * torch.randn_like(p.grad, device=device)  # smaller magnitude for stability
 
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochsRefinement}")
@@ -447,7 +459,7 @@ def test(loss,start_time):
     #x_plot = torch.linspace(x_min, x_max, 500).view(-1, 1)
     
     #Using x_plot from analytical graphs x points
-    x_plot = getxplot(test_case)
+    x_plot = getxplot(test_case).to(device)
 
     #Analytical results
     h_exact = get_analytical_results(test_case)
@@ -465,18 +477,18 @@ def test(loss,start_time):
 
     with torch.no_grad():
         h_pred, u_pred = model(x_plot)
-        h_pred_plot = h_pred.numpy().flatten()
-        u_pred_plot = u_pred.numpy().flatten()
+        h_pred_plot = h_pred.cpu().numpy().flatten()
+        u_pred_plot = u_pred.cpu().numpy().flatten()
         # Compute bed elevation and free surface
         zb_plot = bed_elevation(x_plot)
         #eta_plot = h_pred_plot + zb_plot.numpy().flatten() # Free surface
-        x_np = x_plot.detach().numpy().flatten()
-
+        x_np = x_plot.cpu().detach().numpy().flatten()
+        zb_plot_np = zb_plot.cpu().numpy().flatten() # Need this for plotting zb
         # Compure Froude number
         Fr = u_pred / torch.sqrt(g * h_pred)
-        Fr_plot = Fr.numpy().flatten()
+        Fr_plot = Fr.cpu().numpy().flatten()
         fr_critical_mask = (Fr > 1.0).float()
-        fr_critical_mask_plot = fr_critical_mask.numpy().flatten()
+        fr_critical_mask_plot = fr_critical_mask.cpu().numpy().flatten()
 
         # Calculate errors
         h_error = np.abs(h_pred_plot - h_exact)
@@ -637,6 +649,13 @@ def test(loss,start_time):
     print("Model saved successfully!")
 
 def logdata(x,h,u,q,hu_x,flux_x,bed_momentum):
+    x_cpu = x.cpu()
+    h_cpu = h.cpu()
+    u_cpu = u.cpu()
+    q_cpu = q.cpu()
+    hu_x_cpu = hu_x.cpu()
+    flux_x_cpu = flux_x.cpu()
+    bed_momentum_cpu = bed_momentum.cpu()
     with open("x.txt", "w") as file:
         for row in x.unbind(0):
             file.write(str(row.item()))
